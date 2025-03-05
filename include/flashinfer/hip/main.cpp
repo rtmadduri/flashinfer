@@ -1,4 +1,4 @@
-#include "math.hip.h"
+#include "math.hip"
 #include <iostream>
 
 __global__ void test_ptx_exp2_kernel(float* x_values, float* results, int num_values) {
