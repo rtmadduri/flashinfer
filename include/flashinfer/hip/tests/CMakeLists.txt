@@ -5,13 +5,28 @@ project(FlashInferMath LANGUAGES CXX HIP)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(FetchContent)
+
+FetchContent_Declare(
+  googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG 6910c9d9165801d8827d628cb72eb7ea9dd538c5 # release-1.16.0
+  FIND_PACKAGE_ARGS NAMES GTest)
+# )
+FetchContent_MakeAvailable(googletest)
+
+# GoogleTest has to be included so that gtest_discover_tests works
+include(GoogleTest)
+# Thread support is needed for gtest
+find_package(Threads REQUIRED)
+
 find_package(HIP REQUIRED)
 set(CMAKE_HIP_COMPILER ${HIP_HIPCC_EXECUTABLE})
 set(HIP_HIPCC_FLAGS "${HIP_HIPCC_FLAGS} --offload-arch=gfx942")
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
-find_package(GTest REQUIRED)
+# find_package(GTest REQUIRED)
 include_directories(${GTEST_INCLUDE_DIRS})
 
 add_library(math STATIC /root/flashinfer/include/flashinfer/hip/math.hip.h)
@@ -30,9 +45,11 @@ add_executable(test_math /root/flashinfer/include/flashinfer/hip/tests/test_math
 
 target_link_libraries(test_math PRIVATE
 math
-"${TORCH_LIBRARIES}"
-${GTEST_LIBRARIES}
-${GTEST_MAIN_LIBRARIES}
+"${TORCH_LIBRARIES}" 
+# ${GTEST_LIBRARIES} TODO - Fix this!
+# ${GTEST_MAIN_LIBRARIES} 
+gtest
+gtest_main
 pthread
 )
 
