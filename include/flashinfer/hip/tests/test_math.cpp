@@ -51,6 +51,13 @@ __global__ void test_tanh_kernel(T* x_values, T* results) {
     }
 }
 
+__global__ void test_shfl_xor_sync(float* input, float* output, int lane_mask){
+        int lane = threadIdx.x % 64;
+        float val = input[lane];
+        float result = shfl_xor_sync(val, lane_mask);
+        output[lane] = result;
+    }
+
 TEST(hipFunctionsTest, TestPtxExp2Float) {
 
     float x_host[NUM_VALUES] = {0.0f, 1.0f, -1.0f, 2.0f, -2.0f};
@@ -200,6 +207,39 @@ TEST(hipFunctionsTest, TestTanh) {
 
     hipFree(x_device);
     hipFree(results_device);
+}
+
+TEST(hipFunctionsTest, TestShflXorSync) {
+
+    const int WARP_SIZE = 64;
+    float h_input[WARP_SIZE], h_output[WARP_SIZE];
+
+    float *d_input, *d_output;
+    int lane_mask = 1;
+
+    for(int i = 0; i < WARP_SIZE; ++i){
+        h_input[i] = static_cast<float>(i);
+    }
+    
+    size_t BYTES = WARP_SIZE * sizeof(float);
+
+    hipMalloc((void**)&d_input, BYTES);
+    hipMalloc((void**)&d_output, BYTES);
+
+    hipMemcpy(d_input, h_input, BYTES, hipMemcpyHostToDevice);
+
+    test_shfl_xor_sync<<<1, WARP_SIZE>>>(d_input, d_output, lane_mask);
+    hipMemcpy(h_output, d_output, BYTES, hipMemcpyDeviceToHost);
+
+    for(int i = 0; i < WARP_SIZE; ++i){
+        int expected_idx = i ^ lane_mask;
+        if(expected_idx < WARP_SIZE){
+            ASSERT_EQ(h_output[i], h_input[expected_idx]);
+        }
+    }
+
+    hipFree(d_input);
+    hipFree(d_output);
 }
 
 int main(int argc, char **argv) {
