@@ -13,8 +13,8 @@
 #include "gpu_iface/platform.hpp"
 #include "gpu_iface/utils.cuh"
 
-#if defined(PLATFORM_CUDA_DEVICE)
-#include "gpu_iface/backend/cuda/vec_dtypes.cuh"
+#if defined(PLATFORM_gpu_DEVICE)
+#include "gpu_iface/backend/gpu/vec_dtypes.cuh"
 #elif defined(PLATFORM_HIP_DEVICE)
 #define HIP_ENABLE_WARP_SYNC_BUILTINS 1
 // #include "gpu_iface/memory_ops.hpp"
@@ -28,6 +28,7 @@
 #include "pos_enc.cuh"
 #include "state.cuh"
 
+#define IDX 0
 namespace flashinfer {
 
 DEFINE_HAS_MEMBER(decode_maybe_q_rope_offset)
@@ -216,6 +217,20 @@ template <PosEncodingMode pos_encoding_mode, uint32_t num_stages_smem, uint32_t 
           uint32_t vec_size, uint32_t bdx, uint32_t bdy, uint32_t bdz, typename AttentionVariant,
           typename Params>
 __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
+  int globalIndex = (blockIdx.y * gridDim.x + blockIdx.x) * (blockDim.x * blockDim.y * blockDim.z) +
+                    (threadIdx.z * blockDim.x * blockDim.y) + (threadIdx.y * blockDim.x) +
+                    threadIdx.x;
+
+  // if(globalIndex == IDX){
+  //   printf(" ### SingleDecodeWithKVCacheKernel Kernel Log - Thread Idx = %d ### \n", IDX);
+  //   printf("num_stages_smem: %d\n", num_stages_smem);
+  //   printf("tile_size_per_bdx: %d\n", tile_size_per_bdx);
+  //   printf("vec_size: %d\n", vec_size);
+  //   printf("bdx: %d\n", bdx);
+  //   printf("bdy: %d\n", bdy);
+  //   printf("bdz: %d\n", bdz);
+  // }
+
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -226,9 +241,20 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
   const uint32_t q_stride_h = params.q_stride_h;
   const uint32_t kv_stride_n = params.kv_stride_n;
   const uint32_t kv_stride_h = params.kv_stride_h;
+
+  // if(globalIndex == IDX){
+  //   printf("q_stride_n: %d\n", q_stride_n);
+  //   printf("q_stride_h: %d\n", q_stride_h);
+  //   printf("kv_stride_n: %d\n", kv_stride_n);
+  //   printf("kv_stride_h: %d\n", kv_stride_h);
+  // }
   DTypeO* o = params.o;
   float* lse = params.lse;
   uint32_t kv_chunk_size = params.kv_chunk_size;
+
+  // if(globalIndex == IDX){
+  //   printf("kv_chunk_size: %d\n", kv_chunk_size);
+  // }
 
   auto block = cg::this_thread_block();
   auto grid = cg::this_grid();
@@ -239,9 +265,23 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
   uint32_t kv_chunk_idx = blockIdx.x;
   uint32_t num_qo_heads = params.num_qo_heads;
 
+  // if(globalIndex == IDX){
+  //   printf("head_dim: %d\n", head_dim);
+  //   printf("kv_head_idx: %d\n", kv_head_idx);
+  //   printf("qo_head_idx: %d\n", qo_head_idx);
+  //   printf("kv_chunk_idx: %d\n", kv_chunk_idx);
+  //   printf("num_qo_heads: %d\n", num_qo_heads);
+  // }
+
   extern __shared__ uint8_t smem[];
+
   AttentionVariant variant(params, /*batch_idx=*/0, smem);
   const uint32_t seq_len = variant.kv_len;
+
+  // if(globalIndex == IDX){
+  //   printf("seq_len: %d\n", seq_len);
+  // }
+
   DTypeKV* k_smem = (DTypeKV*)smem;
   DTypeKV* v_smem = (DTypeKV*)(smem + num_stages_smem * bdy * tile_size_per_bdx * bdz * head_dim *
                                           sizeof(DTypeKV));
@@ -249,6 +289,11 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
                                        sizeof(DTypeKV));
 
   uint32_t tx = threadIdx.x, ty = threadIdx.y, tz = threadIdx.z;
+  // if(globalIndex == IDX){
+  //   printf("tx: %d\n", tx);
+  //   printf("ty: %d\n", ty);
+  //   printf("tz: %d\n", tz);
+  // }
   vec_t<float, vec_size> q_vec;
   vec_t<float, vec_size> freq;
   if constexpr (pos_encoding_mode == PosEncodingMode::kRoPELlama) {
@@ -263,6 +308,9 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
     // apply rotary embedding to q matrix
     q_vec = vec_apply_llama_rope<vec_size, bdx>(q + qo_head_idx * q_stride_h, freq, seq_len - 1);
   } else {
+    // if(globalIndex == IDX){
+    //   printf("q_vec load_indexing: %ld\n", q + qo_head_idx * q_stride_h + tx * vec_size);
+    // }
     // do not apply rotary embedding to q matrix
     q_vec.cast_load(q + qo_head_idx * q_stride_h + tx * vec_size);
   }
@@ -272,12 +320,38 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
   kv_chunk_size = min(kv_chunk_size, seq_len - chunk_start);
   uint32_t chunk_end = chunk_start + kv_chunk_size;
 
+  // if(globalIndex == IDX){
+  //     printf("chunk_start: %d\n", chunk_start);
+  //     printf("new kv_chunk_size: %d\n", kv_chunk_size);
+  //     printf("chunk_end: %d\n", chunk_end);
+  //   }
+
   // preload k tiles and v tiles
   uint32_t producer_kv_idx_base = chunk_start;
   constexpr uint32_t vec_bits = sizeof(DTypeKV) * vec_size * 8;
+
+  // if(globalIndex == IDX){
+  //     printf("producer_kv_idx_base: %d\n", producer_kv_idx_base);
+  //     printf("vec_bits: %d\n", vec_bits);
+  //   }
+
 #pragma unroll
   for (uint32_t iter = 0; iter < num_stages_smem; ++iter) {
     for (uint32_t j = 0; j < tile_size_per_bdx; ++j) {
+      int smem_idx =
+          (((iter * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim + tx * vec_size;
+
+      // if(globalIndex == IDX){
+      //   printf("Global Idx: %d, smem_idx: %d \n", globalIndex, smem_idx);
+      // }
+
+      // int gmem_idx = k + (producer_kv_idx_base + (tz * bdy + ty) * tile_size_per_bdx + j) *
+      // kv_stride_n +
+      //         kv_head_idx * kv_stride_h + tx * vec_size;
+
+      // if(globalIndex == IDX){
+      //   printf("Global Idx: %d", "gmem_idx: %d \n", globalIndex, gmem_idx);
+      // }
       gpu_iface::memory::pred_load<vec_bits, PrefetchMode::kPrefetch, SharedMemFillMode::kNoFill>(
           k_smem + (((iter * bdz + tz) * bdy + ty) * tile_size_per_bdx + j) * head_dim +
               tx * vec_size,
@@ -620,6 +694,28 @@ constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeo
   }
 }
 
+template <typename T>
+void print_gpu_data(T* data, std::string name, std::string message) {
+  constexpr size_t max_size = 2048;
+  std::vector<T> host_data(max_size);
+  FI_GPU_CALL(hipMemcpy(host_data.data(), data, max_size * sizeof(T), hipMemcpyDeviceToHost));
+
+  std::cout << "Printing first 10 elements of " << name << " " << message << std::endl;
+  std::cout << "[";
+
+  int zero_count = 0;
+  for (int i = 0; i < max_size; ++i) {
+    float val = fi::con::explicit_casting<T, float>(host_data[i]);
+    if (val == 0.f) {
+      ++zero_count;
+    }
+    std::cout << val << " ";
+  }
+
+  std::cout << "]" << std::endl;
+  std::cout << "Zero Count: " << zero_count << std::endl;
+}
+
 /*!
  * \brief FlashAttention decoding with kv-cache for a single request
  * \tparam DTypeQ A template type indicates the query data type
@@ -632,8 +728,7 @@ constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeo
  *   head_dim] for NHD layout, [num_kv_heads, seq_len, head_dim] for HND layout
  * \param o The output matrix, shape: [num_qo_heads, head_dim]
  * \param tmp Used-allocated temporary buffer
- * \param num_qo_heads A integer indicates the number of heads of query and
- * output
+ * \param num_qo_heads A integer indicates the number of heads of query and output
  * \param num_kv_heads A integer indicates the number of heads of key and value
  * \param seq_len A integer indicates the sequence length
  * \param head_dim A integer indicates the head dimension
@@ -647,117 +742,276 @@ template <uint32_t HEAD_DIM, PosEncodingMode POS_ENCODING_MODE, typename Attenti
           typename Params>
 gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTypeO* tmp,
                                              gpuStream_t stream) {
+  // std::cout<<"\n ### SingleDecodeWithKVCache Logging ### \n";
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
+  // std::cout<<"HEAD_DIM: "<<HEAD_DIM<<std::endl;
   const uint32_t num_qo_heads = params.num_qo_heads;
   const uint32_t num_kv_heads = params.num_kv_heads;
   const uint32_t seq_len = params.kv_len;
+  // std::cout<<"num_qo_heads: "<<num_qo_heads<<std::endl;
+  // std::cout<<"num_kv_heads: "<<num_kv_heads<<std::endl;
+  // std::cout<<"seq_len: "<<seq_len<<std::endl;
 
-  constexpr uint32_t vec_size = std::max(16UL / sizeof(DTypeKV), HEAD_DIM / 32UL);
+  // AMD CDNA3 optimized vector size - prefer smaller vec_size for better occupancy
+  constexpr uint32_t vec_size = std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL);
+  // std::cout<<"sizeof(DTypeKV): "<<sizeof(DTypeKV)<<std::endl;
+  // std::cout<<"vec_size: "<<vec_size<<std::endl;
+
   constexpr uint32_t bdx = HEAD_DIM / vec_size;
+  // std::cout<<"bdx: "<<bdx<<std::endl;
   auto compute_capacity = GetCudaComputeCapability();
-  static_assert(bdx <= 64U);
+  static_assert(bdx <= 64);
 
   DISPATCH_GQA_GROUP_SIZE(num_qo_heads / num_kv_heads, GROUP_SIZE, {
+    // std::cout<<"num_qo_heads/num_kv_heads: "<<num_qo_heads/num_kv_heads<<std::endl;
+    // std::cout<<"GROUP_SIZE: "<<GROUP_SIZE<<std::endl;
     constexpr uint32_t bdy = GROUP_SIZE;
+    // std::cout<<"bdy: "<<bdy<<std::endl;
 
-    // For AMD CDNA3, use fewer threads to reduce shared memory usage
-    constexpr uint32_t num_threads =
-        std::max(get_heuristic_num_threads(GROUP_SIZE, sizeof(DTypeKV)), bdx * bdy);
-
+    // AMD CDNA3: Prefer 256 threads per block for better occupancy
+    constexpr uint32_t num_threads = 256;
+    // std::cout<<"num_threads: "<<num_threads<<std::endl;
     constexpr uint32_t bdz = num_threads / (bdx * bdy);
+    // std::cout<<"bdz: "<<bdz<<std::endl;
 
-    // Use smaller tile size for AMD to reduce shared memory requirements
-    constexpr uint32_t tile_size_per_bdx = GROUP_SIZE == 1 ? (sizeof(DTypeKV) == 1 ? 2U : 4U) : 1U;
+    // AMD CDNA3: Reduce tile size to minimize shared memory usage
+    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1) ? 2U : 1U;
+    // std::cout<<"tile_size_per_bdx: "<<tile_size_per_bdx<<std::endl;
 
-    DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM(compute_capacity, BASE_NUM_STAGES_SMEM, {
-      constexpr uint32_t NUM_STAGES_SMEM = std::min(BASE_NUM_STAGES_SMEM, 2U);
-      const uint64_t smem_size =
-          2U * NUM_STAGES_SMEM * bdy * tile_size_per_bdx * bdz * HEAD_DIM * sizeof(DTypeKV) +
-          2U * bdy * bdz * sizeof(float);
+    // AMD CDNA3: Use fewer pipeline stages (2 instead of 4) due to LDS constraints
+    constexpr uint32_t NUM_STAGES_SMEM = 2;
+    // std::cout<<"NUM_STAGES_SMEM: "<<NUM_STAGES_SMEM<<std::endl;
 
-      // For AMD, ensure we don't exceed 64KB shared memory
-      const uint64_t max_smem = 65536U;
-      const uint64_t safe_smem_size = std::min(smem_size, max_smem - 1024U);  // Leave some buffer
+    // Calculate shared memory size with proper alignment
+    // AMD CDNA3 LDS is 64KB per CU, shared across wavefronts
+    const uint32_t smem_size =
+        2U * NUM_STAGES_SMEM * bdy * tile_size_per_bdx * bdz * HEAD_DIM * sizeof(DTypeKV) +
+        2U * bdy * bdz * sizeof(float);
+    // std::cout<<"smem_size: "<<smem_size<<std::endl;
 
-      auto kernel =
-          SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
-                                        vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
+    // Verify shared memory doesn't exceed hardware limits (64KB for CDNA3)
+    if (smem_size > 65536) {
+      std::ostringstream err_msg;
+      err_msg << "Shared memory size " << smem_size << " exceeds CDNA3 limit of 64KB";
+      FLASHINFER_ERROR(err_msg.str());
+    }
 
-      FI_GPU_CALL(gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize,
-                                      safe_smem_size));
+    auto kernel =
+        SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
+                                      vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
+    FI_GPU_CALL(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-#if defined(PLATFORM_HIP_DEVICE)
-      // For CDNA we have shared memory allocaion disabled for now.
-      // TODO: Fix this for better performance
+    if (seq_len <= 256 || tmp == nullptr) {
+      // std::cout<<"  seq_len <= 256 \n";
       dim3 nblks = dim3(1, num_kv_heads);
+      // std::cout<<"nblks.x: "<<nblks.x<<", nblks.y: "<<nblks.y<<std::endl;
       dim3 nthrs = dim3(bdx, bdy, bdz);
+      // std::cout<<"nthrs.x: "<<nthrs.x<<", nthrs.y: "<<nthrs.y<<", nthrs.z: "<<nthrs.z<<std::endl;
       params.kv_chunk_size = seq_len;
+      // std::cout<<"kv_chunk_size: "<<params.kv_chunk_size<<std::endl;
       void* args[] = {(void*)&params};
-      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, safe_smem_size, stream));
+      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    } else {
+      // std::cout<<" seq_len > 256 \n";
+      // AMD CDNA3: Get actual device properties
+      int num_blocks_per_sm = 0;
+      int num_sm = 0;
+      int dev_id = 0;
+      FI_GPU_CALL(gpuGetDevice(&dev_id));
+      FI_GPU_CALL(gpuDeviceGetAttribute(&num_sm, gpuDevAttrMultiProcessorCount, dev_id));
+      FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
+                                                               num_threads, smem_size));
 
-#else
+      if (num_blocks_per_sm == 0) {
+        std::ostringstream err_msg;
+        err_msg << "Zero occupancy detected. smem_size=" << smem_size
+                << ", num_threads=" << num_threads;
+        FLASHINFER_ERROR(err_msg.str());
+      }
 
-                    if (seq_len <= 256 || tmp == nullptr) {
-                        // No need to use partition-kv kernel
-                        dim3 nblks = dim3(1, num_kv_heads);
-                        dim3 nthrs = dim3(bdx, bdy, bdz);
-                        params.kv_chunk_size = seq_len;
-                        void *args[] = {(void *)&params};
-                        FI_GPU_CALL(gpuLaunchKernel((void *)kernel, nblks, nthrs,
-                                                    args, safe_smem_size, stream));
-                    }
-                    else {
-                        // Use partition-kv kernel with AMD-specific tuning
-                        int num_blocks_per_sm = 0;
-                        int num_sm = 0;
-                        int dev_id = 0;
-                        FI_GPU_CALL(gpuGetDevice(&dev_id));
-                        FI_GPU_CALL(gpuDeviceGetAttribute(
-                            &num_sm, gpuDevAttrMultiProcessorCount, dev_id));
+      // std::cout<<"dev_id: "<<dev_id<<std::endl;
+      // std::cout<<"num_sm: "<<num_sm<<std::endl;
+      // std::cout<<"num_blocks_per_sm: "<<num_blocks_per_sm<<std::endl;
 
-                        // For AMD hardware, limit to 1 block per CU to avoid shared
-                        // memory issues
-                        num_blocks_per_sm = 1;
+      uint32_t max_grid_size = uint32_t(num_blocks_per_sm) * uint32_t(num_sm);
+      // std::cout<<"max_grid_size: "<<max_grid_size<<std::endl;
 
-                        uint32_t max_grid_size =
-                            uint32_t(num_blocks_per_sm) * uint32_t(num_sm);
-                        uint32_t max_num_kv_chunks = max_grid_size / num_kv_heads;
+      uint32_t max_num_kv_chunks = max_grid_size / num_kv_heads;
+      // std::cout<<"max_num_kv_chunks: "<<max_num_kv_chunks<<std::endl;
 
-                        // For AMD, use smaller chunk size to fit in memory
-                        uint32_t kv_chunk_size =
-                            max(ceil_div(seq_len, max_num_kv_chunks), 256U);
-                        uint32_t num_chunks = ceil_div(seq_len, kv_chunk_size);
+      // AMD CDNA3: Use larger chunk size to reduce synchronization overhead
+      uint32_t kv_chunk_size = max(ceil_div(seq_len, max_num_kv_chunks), 512);
+      // std::cout<<"kv_chunk_size: "<<kv_chunk_size<<std::endl;
 
-                        dim3 nblks = dim3(num_chunks, num_kv_heads);
-                        dim3 nthrs = dim3(bdx, bdy, bdz);
+      uint32_t num_chunks = ceil_div(seq_len, kv_chunk_size);
+      // std::cout<<"num_chunks: "<<num_chunks<<std::endl;
 
-                        float *tmp_lse =
-                            (float *)(tmp + num_chunks * num_qo_heads * HEAD_DIM);
-                        auto o = params.o;
-                        params.o = tmp;
-                        params.lse = tmp_lse;
-                        params.kv_chunk_size = kv_chunk_size;
-                        void *args[] = {(void *)&params};
+      dim3 nblks = dim3(num_chunks, num_kv_heads);
+      // std::cout<<"nblks.x: "<<nblks.x<<", nblks.y: "<<nblks.y<<std::endl;
+      if (nblks.x == 0 || nblks.y == 0) {
+        std::ostringstream err_msg;
+        err_msg << "Invalid kernel configuration: nblks=(" << nblks.x << "," << nblks.y << ")";
+        FLASHINFER_ERROR(err_msg.str());
+      }
+      dim3 nthrs = dim3(bdx, bdy, bdz);
+      // std::cout<<"nthrs.x: "<<nthrs.x<<", nthrs.y: "<<nthrs.y<<", nthrs.z: "<<nthrs.z<<std::endl;
 
-                        FI_GPU_CALL(gpuLaunchKernel((void *)kernel, nblks, nthrs,
-                                                    args, safe_smem_size, stream));
+      float* tmp_lse = (float*)(tmp + num_chunks * num_qo_heads * HEAD_DIM);
+      auto o = params.o;
+      params.o = tmp;
+      params.lse = tmp_lse;
+      params.kv_chunk_size = kv_chunk_size;
+      // std::cout<<"params.kv_chunk_size: "<<params.kv_chunk_size<<std::endl;
+      void* args[] = {(void*)&params};
+      // std::cout<<" Kernel Launch \n";
+      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
 
-                        if constexpr (AttentionVariant::use_softmax) {
-                            FI_GPU_CALL(
-                            MergeStates(tmp, tmp_lse, o, nullptr, num_chunks,
-                            1, num_qo_heads, HEAD_DIM, stream));
-                        } else {
-                            FI_GPU_CALL(AttentionSum(tmp, o, num_chunks, 1,
-                            num_qo_heads, HEAD_DIM, stream));
-                        }
-                    }
-#endif
-    });
+      // Ensure kernel completion before merge
+      FI_GPU_CALL(hipStreamSynchronize(stream));
+
+      // print_gpu_data<DTypeO>(tmp, "tmp", "before merge");
+      // print_gpu_data<float>(tmp_lse, "tmp_lse", "before merge");
+
+      if constexpr (AttentionVariant::use_softmax) {
+        FI_GPU_CALL(
+            MergeStates(tmp, tmp_lse, o, nullptr, num_chunks, 1, num_qo_heads, HEAD_DIM, stream));
+      } else {
+        FI_GPU_CALL(AttentionSum(tmp, o, num_chunks, 1, num_qo_heads, HEAD_DIM, stream));
+      }
+
+      // print_gpu_data<DTypeO>(o, "o", "after merge");
+      // std::cout<<"\n ### End of SingleDecodeWithKVCache Logging ### \n";
+    }
   });
   return gpuSuccess;
 }
+
+// template <uint32_t HEAD_DIM, PosEncodingMode POS_ENCODING_MODE, typename AttentionVariant,
+//           typename Params>
+// gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTypeO* tmp,
+//                                               gpuStream_t stream) {
+
+//   std::cout<<"\n ### SingleDecodeWithKVCache Logging ### \n";
+//   using DTypeQ = typename Params::DTypeQ;
+//   using DTypeKV = typename Params::DTypeKV;
+//   using DTypeO = typename Params::DTypeO;
+//   std::cout<<"HEAD_DIM: "<<HEAD_DIM<<std::endl;
+//   const uint32_t num_qo_heads = params.num_qo_heads;
+//   const uint32_t num_kv_heads = params.num_kv_heads;
+//   const uint32_t seq_len = params.kv_len;
+//   std::cout<<"num_qo_heads: "<<num_qo_heads<<std::endl;
+//   std::cout<<"num_kv_heads: "<<num_kv_heads<<std::endl;
+//   std::cout<<"seq_len: "<<seq_len<<std::endl;
+
+//   constexpr uint32_t vec_size = std::max(16UL / sizeof(DTypeKV), HEAD_DIM / 32UL); // 8
+//   std::cout<<"sizeof(DTypeKV): "<<sizeof(DTypeKV)<<std::endl;
+//   std::cout<<"vec_size: "<<vec_size<<std::endl;
+
+//   constexpr uint32_t bdx = HEAD_DIM / vec_size; // 128/8 = 16
+//   std::cout<<"bdx: "<<bdx<<std::endl;
+//   auto compute_capacity = GetCudaComputeCapability();
+//   static_assert(bdx <= 32);
+//   DISPATCH_GQA_GROUP_SIZE(num_qo_heads / num_kv_heads, GROUP_SIZE, {
+//     std::cout<<"num_qo_heads/num_kv_heads: "<<num_qo_heads/num_kv_heads<<std::endl;
+//     std::cout<<"GROUP_SIZE: "<<GROUP_SIZE<<std::endl;
+//     constexpr uint32_t bdy = GROUP_SIZE;
+//     std::cout<<"bdy: "<<bdy<<std::endl;
+//     constexpr uint32_t num_threads =
+//         std::max(get_heuristic_num_threads(GROUP_SIZE, sizeof(DTypeKV)), bdx * bdy);
+//     // constexpr uint32_t num_threads = 256;
+//       std::cout<<"num_threads: "<<num_threads<<std::endl;
+//     constexpr uint32_t bdz = num_threads / (bdx * bdy);
+//     std::cout<<"bdz: "<<bdz<<std::endl;
+//     constexpr uint32_t tile_size_per_bdx = GROUP_SIZE == 1 ? (sizeof(DTypeKV) == 1 ? 2U : 8U) :
+//     1U; //4 std::cout<<"tile_size_per_bdx: "<<tile_size_per_bdx<<std::endl;
+//     DISPATCH_COMPUTE_CAP_DECODE_NUM_STAGES_SMEM(compute_capacity, NUM_STAGES_SMEM, {
+//       std::cout<<"NUM_STAGES_SMEM: "<<NUM_STAGES_SMEM<<std::endl;
+//       const uint32_t smem_size =
+//           2U * NUM_STAGES_SMEM * bdy * tile_size_per_bdx * bdz * HEAD_DIM * sizeof(DTypeKV) +
+//           2U * bdy * bdz * sizeof(float);
+//         std::cout<<"smem_size: "<<smem_size<<std::endl;
+//       auto kernel =
+//           SingleDecodeWithKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
+//                                         vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
+//       FI_GPU_CALL(
+//           gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+//       if (seq_len <= 256 || tmp == nullptr) {
+//         std::cout<<"  seq_len < 256 \n";
+//         // no need to use partition-kv kernel
+//         dim3 nblks = dim3(1, num_kv_heads);
+//         std::cout<<"nblks.x: "<<nblks.x<<", nblks.y: "<<nblks.y<<std::endl;
+//         dim3 nthrs = dim3(bdx, bdy, bdz);
+//         std::cout<<"nthrs.x: "<<nthrs.x<<", nthrs.y: "<<nthrs.y<<", nthrs.z:
+//         "<<nthrs.z<<std::endl; params.kv_chunk_size = seq_len; std::cout<<"kv_chunk_size:
+//         "<<params.kv_chunk_size<<std::endl; void* args[] = {(void*)&params}; FI_GPU_CALL(
+//             gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+//       } else {
+//         std::cout<<" seq_len > 256 \n";
+//         // use partition-kv kernel
+//         int num_blocks_per_sm = 0;
+//         int num_sm = 0;
+//         int dev_id = 0;
+//         FI_GPU_CALL(gpuGetDevice(&dev_id));
+//         FI_GPU_CALL(
+//             gpuDeviceGetAttribute(&num_sm, gpuDevAttrMultiProcessorCount, dev_id));
+//         FI_GPU_CALL(gpuOccupancyMaxActiveBlocksPerMultiprocessor(
+//             &num_blocks_per_sm, kernel, num_threads, smem_size));
+
+//         assert(num_blocks_per_sm > 0);
+
+//         std::cout<<"dev_id: "<<dev_id<<std::endl;
+//         std::cout<<"num_sm: "<<num_sm<<std::endl;
+//         std::cout<<"num_blocks_per_sm "<<num_blocks_per_sm<<std::endl;
+
+//         uint32_t max_grid_size = uint32_t(num_blocks_per_sm) * uint32_t(num_sm);
+//         std::cout<<"max_grid_size: "<<max_grid_size<<std::endl;
+
+//         uint32_t max_num_kv_chunks = max_grid_size / num_kv_heads;
+//         std::cout<<"max_num_kv_chunks: "<<max_num_kv_chunks<<std::endl;
+
+//         uint32_t kv_chunk_size = max(ceil_div(seq_len, max_num_kv_chunks), 256);
+//         std::cout<<"kv_chunk_size: "<<kv_chunk_size<<std::endl;
+
+//         uint32_t num_chunks = ceil_div(seq_len, kv_chunk_size);
+//         std::cout<<"num_chunks: "<<num_chunks<<std::endl;
+
+//         dim3 nblks = dim3(num_chunks, num_kv_heads);
+//         std::cout<<"nblks.x: "<<nblks.x<<", nblks.y: "<<nblks.y<<std::endl;
+//         if (nblks.x == 0 || nblks.y == 0) {
+//           std::ostringstream err_msg;
+//           err_msg << "Invalid kernel configuration: nblks=(" << nblks.x << "," << nblks.y << ")";
+//           FLASHINFER_ERROR(err_msg.str());
+//         }
+//         dim3 nthrs = dim3(bdx, bdy, bdz);
+//         std::cout<<"nthrs.x: "<<nthrs.x<<", nthrs.y: "<<nthrs.y<<", nthrs.z:
+//         "<<nthrs.z<<std::endl; float* tmp_lse = (float*)(tmp + num_chunks * num_qo_heads *
+//         HEAD_DIM); auto o = params.o; params.o = tmp; params.lse = tmp_lse; params.kv_chunk_size
+//         = kv_chunk_size; std::cout<<"params.kv_chunk_size: "<<params.kv_chunk_size<<std::endl;
+//         void* args[] = {(void*)&params};
+//         std::cout<<" Kernel Launch \n";
+//         FI_GPU_CALL(
+//             gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+
+//         print_gpu_data<DTypeO>(tmp, "tmp", "before softmax loop");
+//         print_gpu_data<float>(tmp_lse, "tmp_lse",
+//                               "before softmax loop");
+//         print_gpu_data<DTypeO>(o, "o", "before softmax loop");
+
+//         // if constexpr (AttentionVariant::use_softmax) {
+//         //   FI_GPU_CALL(
+//         //       MergeStates(tmp, tmp_lse, o, nullptr, num_chunks, 1, num_qo_heads, HEAD_DIM,
+//         stream));
+//         // } else {
+//         //   FI_GPU_CALL(AttentionSum(tmp, o, num_chunks, 1, num_qo_heads, HEAD_DIM, stream));
+//         // }
+//         std::cout<<"\n ### End of SingleDecodeWithKVCache Logging ### \n";
+//       }
+//     });
+//   });
+//   return gpuSuccess;
+// }
 
 template <uint32_t HEAD_DIM, PosEncodingMode POS_ENCODING_MODE, typename AttentionVariant,
           typename Params>
