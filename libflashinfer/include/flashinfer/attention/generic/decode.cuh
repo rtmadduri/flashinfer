@@ -685,12 +685,12 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(const Params params) {
 constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeof_dtype) {
   if (group_size == 8U) {
     if (sizeof_dtype == 1U) {
-      return 256U;  // not enough registers for 512 threads
+      return 512;  // not enough registers for 512 threads
     } else {
-      return 512U;
+      return 256;
     }
   } else {
-    return 128U;
+    return 256;
   }
 }
 
@@ -746,20 +746,20 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
-  // std::cout<<"HEAD_DIM: "<<HEAD_DIM<<std::endl;
-  const uint32_t num_qo_heads = params.num_qo_heads;
-  const uint32_t num_kv_heads = params.num_kv_heads;
-  const uint32_t seq_len = params.kv_len;
+  // std::cout<<"HEAD_DIM: "<<HEAD_DIM<<std::endl; // 256
+  const uint32_t num_qo_heads = params.num_qo_heads; // 32
+  const uint32_t num_kv_heads = params.num_kv_heads; // 4
+  const uint32_t seq_len = params.kv_len; // 512
   // std::cout<<"num_qo_heads: "<<num_qo_heads<<std::endl;
   // std::cout<<"num_kv_heads: "<<num_kv_heads<<std::endl;
   // std::cout<<"seq_len: "<<seq_len<<std::endl;
 
   // AMD CDNA3 optimized vector size - prefer smaller vec_size for better occupancy
-  constexpr uint32_t vec_size = std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL);
+  constexpr uint32_t vec_size = std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL); //max(8/2, 256/64)
   // std::cout<<"sizeof(DTypeKV): "<<sizeof(DTypeKV)<<std::endl;
-  // std::cout<<"vec_size: "<<vec_size<<std::endl;
+  // std::cout<<"vec_size: "<<vec_size<<std::endl; //4
 
-  constexpr uint32_t bdx = HEAD_DIM / vec_size;
+  constexpr uint32_t bdx = HEAD_DIM / vec_size; //64
   // std::cout<<"bdx: "<<bdx<<std::endl;
   auto compute_capacity = GetCudaComputeCapability();
   static_assert(bdx <= 64);
@@ -771,17 +771,19 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
     // std::cout<<"bdy: "<<bdy<<std::endl;
 
     // AMD CDNA3: Prefer 256 threads per block for better occupancy
-    constexpr uint32_t num_threads = 256;
+    constexpr uint32_t num_threads = std::max(get_heuristic_num_threads(GROUP_SIZE, sizeof(DTypeKV)), bdx * bdy);
+ 
+    // constexpr uint32_t num_threads = 256;
     // std::cout<<"num_threads: "<<num_threads<<std::endl;
-    constexpr uint32_t bdz = num_threads / (bdx * bdy);
+    constexpr uint32_t bdz = num_threads / (bdx * bdy); // 1
     // std::cout<<"bdz: "<<bdz<<std::endl;
 
     // AMD CDNA3: Reduce tile size to minimize shared memory usage
-    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1) ? 2U : 1U;
+    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1) ? 2U : 4U; // 4
     // std::cout<<"tile_size_per_bdx: "<<tile_size_per_bdx<<std::endl;
 
     // AMD CDNA3: Use fewer pipeline stages (2 instead of 4) due to LDS constraints
-    constexpr uint32_t NUM_STAGES_SMEM = 2;
+    constexpr uint32_t NUM_STAGES_SMEM = 2; 
     // std::cout<<"NUM_STAGES_SMEM: "<<NUM_STAGES_SMEM<<std::endl;
 
     // Calculate shared memory size with proper alignment

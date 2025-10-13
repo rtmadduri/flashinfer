@@ -156,37 +156,41 @@ void _TestDecodingKernelCorrectness(size_t num_qo_heads, size_t num_kv_heads, si
   hipFree(tmp);
 }
 
-// template <typename DTypeQO, typename DTypeKV>
-// void TestSingleDecodeKernelCorrectness() {
-//   for (size_t num_qo_heads : {32}) {
-//     for (size_t num_kv_heads : {4, 8, 32}) {
-//       for (size_t seq_len :
-//            {512, 1024, 2048, 4096, 8192, 16384, 32768}) {
-//         for (size_t head_dim : {64, 128, 256}) {
-//           for (unsigned int kv_layout : {0U, 1U}) {
-//             for (unsigned int pos_encoding_mode : {0U, 1U}) {
-//               if (std::is_same<DTypeQO, __hip_bfloat16>::value) {
-//                 pos_encoding_mode = 0U;
-//               }
-//               _TestDecodingKernelCorrectness<DTypeQO, DTypeKV>(num_qo_heads, num_kv_heads,
-//               seq_len,
-//                                                                head_dim, QKVLayout(kv_layout),
-//                                                                PosEncodingMode(pos_encoding_mode));
-//             }
-//           }
-//         }
-//       }
-//     }
-//   }
-// }
+template <typename DTypeQO, typename DTypeKV>
+void TestSingleDecodeKernelCorrectness() {
+  for (size_t num_qo_heads : {32}) {
+    for (size_t num_kv_heads : {4, 8, 32}) {
+      for (size_t seq_len : {512, 1024, 2048, 4096, 8192, 16384}) {
+        for (size_t head_dim : {64, 128}) {
+          for (unsigned int kv_layout : {0U, 1U}) {
+            for (unsigned int pos_encoding_mode : {0U, 1U}) {
+              if (std::is_same<DTypeQO, __hip_bfloat16>::value) {
+                pos_encoding_mode = 0U;
+              }
+              std::cout << "num_qo_heads=" << num_qo_heads << ", num_kv_heads=" << num_kv_heads
+                        << ", seq_len=" << seq_len << ", head_dim=" << head_dim
+                        << ", kv_layout=" << kv_layout
+                        << ", pos_encoding_mode=" << pos_encoding_mode
+                        << std::endl;
+              _TestDecodingKernelCorrectness<DTypeQO, DTypeKV>(num_qo_heads, num_kv_heads,
+              seq_len,
+                                                               head_dim, QKVLayout(kv_layout),
+                                                               PosEncodingMode(pos_encoding_mode));
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
-// TEST(FlashInferCorrectnessTest, SingleDecodeKernelCorrectnessTestFP16) {
-//   TestSingleDecodeKernelCorrectness<__half, __half>();
-// }
+TEST(FlashInferCorrectnessTest, SingleDecodeKernelCorrectnessTestFP16) {
+  TestSingleDecodeKernelCorrectness<__half, __half>();
+}
 
-// TEST(FlashInferCorrectnessTest, SingleDecodeKernelCorrectnessTestBF16) {
-//   TestSingleDecodeKernelCorrectness<__hip_bfloat16, __hip_bfloat16>();
-// }
+TEST(FlashInferCorrectnessTest, SingleDecodeKernelCorrectnessTestBF16) {
+  TestSingleDecodeKernelCorrectness<__hip_bfloat16, __hip_bfloat16>();
+}
 
 //*****************************************************************************
 // Disabled because we don't have a way to convert from float<-> fp8
@@ -200,23 +204,23 @@ void _TestDecodingKernelCorrectness(size_t num_qo_heads, size_t num_kv_heads, si
 // }
 //*****************************************************************************
 
-void broken() {
-  using DTypeQO = __half;
-  using DTypeKV = __half;
+// void broken() {
+//   using DTypeQO = __half;
+//   using DTypeKV = __half;
 
-  unsigned int kv_layout = 0U;
-  unsigned int pos_encoding_mode = 0U;
+//   unsigned int kv_layout = 0U;
+//   unsigned int pos_encoding_mode = 0U;
 
-  // Broken
-  size_t num_qo_heads = 32;
-  size_t num_kv_heads = 4;
-  size_t seq_len = 1024;
-  size_t head_dim = 128;
+//   // Broken
+//   size_t num_qo_heads = 32;
+//   size_t num_kv_heads = 4;
+//   size_t seq_len = 1024;
+//   size_t head_dim = 128;
 
-  _TestDecodingKernelCorrectness<DTypeQO, DTypeKV>(num_qo_heads, num_kv_heads, seq_len, head_dim,
-                                                   QKVLayout(kv_layout),
-                                                   PosEncodingMode(pos_encoding_mode));
-}
+//   _TestDecodingKernelCorrectness<DTypeQO, DTypeKV>(num_qo_heads, num_kv_heads, seq_len, head_dim,
+//                                                    QKVLayout(kv_layout),
+//                                                    PosEncodingMode(pos_encoding_mode));
+// }
 
 // void working()
 // {
@@ -238,7 +242,7 @@ void broken() {
 // }
 
 int main(int argc, char** argv) {
-  broken();
-  //   testing::InitGoogleTest(&argc, argv);
-  //   return RUN_ALL_TESTS();
+  // broken();
+    testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }
