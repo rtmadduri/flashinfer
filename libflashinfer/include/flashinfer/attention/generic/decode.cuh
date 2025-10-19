@@ -686,9 +686,9 @@ constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeo
 
   if (group_size == 8U) {
     if (sizeof_dtype == 1U) {
-      return 512;  // not enough registers for 512 threads
+      return 256;  // not enough registers for 512 threads
     } else {
-      return 256;
+      return 512;
     }
   } else {
     return 256;
@@ -780,7 +780,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
     // std::cout<<"bdz: "<<bdz<<std::endl;
 
     // AMD CDNA3: Reduce tile size to minimize shared memory usage
-    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1) ? 4U : 1U; // 4
+    constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1) ? 2U : 1U; // 4
     // std::cout<<"tile_size_per_bdx: "<<tile_size_per_bdx<<std::endl;
 
     // AMD CDNA3: Use fewer pipeline stages (2 instead of 4) due to LDS constraints

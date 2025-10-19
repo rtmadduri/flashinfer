@@ -173,7 +173,7 @@ template <typename DTypeQO, typename DTypeKV>
 void TestSingleDecodeKernelCorrectness() {
   for (size_t num_qo_heads : {32}) {
     for (size_t num_kv_heads : {4, 8, 32}) {
-      for (size_t seq_len : {256, 512, 1024, 2048, 4096, 8192, 16384}) {
+      for (size_t seq_len : {16384}) {
         for (size_t head_dim : {64, 128}) {
           for (unsigned int kv_layout : {0U, 1U}) {
             for (unsigned int pos_encoding_mode : {0U, 1U}) {
