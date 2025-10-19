@@ -70,6 +70,7 @@ template <typename DType>
 std::pair<float, bool> nan_detection_and_accuracy(const std::vector<DType>& cpu_results,
                                                   const std::vector<DType>& gpu_results,
                                                   uint64_t num_qo_heads, uint64_t head_dim) {
+  uint32_t nan_count = 0;
   size_t num_result_errors_atol_1e_3_rtol_1e_3 = 0;
   bool nan_detected = false;
 
@@ -78,6 +79,8 @@ std::pair<float, bool> nan_detection_and_accuracy(const std::vector<DType>& cpu_
     float gpu_result = fi::con::explicit_casting<DType, float>(gpu_results[i]);
 
     if (isnan(gpu_result)) {
+      ++nan_count;
+      std::cout<< "nan detected at index: " << i << std::endl;
       nan_detected = true;
     }
     num_result_errors_atol_1e_3_rtol_1e_3 += (!utils::isclose(gpu_result, cpu_result, 1e-2, 1e-2));
@@ -86,6 +89,9 @@ std::pair<float, bool> nan_detection_and_accuracy(const std::vector<DType>& cpu_
   float result_accuracy =
       1. - float(num_result_errors_atol_1e_3_rtol_1e_3) / float(num_qo_heads * head_dim);
 
+  if(nan_count > 0) {
+    std::cout << "nan_count: " << nan_count << std::endl;
+  }
   return {result_accuracy, nan_detected};
 }
 
@@ -138,6 +144,13 @@ void _TestDecodingKernelCorrectness(size_t num_qo_heads, size_t num_kv_heads, si
   std::vector<DTypeQO> o_host(num_qo_heads * head_dim);
   hipMemcpy(o_host.data(), O, num_qo_heads * head_dim * sizeof(DTypeQO), hipMemcpyDeviceToHost);
 
+  // for(int i = 0 ; i < num_qo_heads; ++i){
+  //   for(int j = 0; j < head_dim; ++j){
+  //     std::cout << __half2float(o_host[i*head_dim + j]) << " ";
+  //   }
+  //   std::cout << std::endl;
+  // }
+
   auto [result_accuracy, nan_detected] =
       nan_detection_and_accuracy(o_ref_host, o_host, num_qo_heads, head_dim);
 
@@ -160,7 +173,7 @@ template <typename DTypeQO, typename DTypeKV>
 void TestSingleDecodeKernelCorrectness() {
   for (size_t num_qo_heads : {32}) {
     for (size_t num_kv_heads : {4, 8, 32}) {
-      for (size_t seq_len : {512, 1024, 2048, 4096, 8192, 16384}) {
+      for (size_t seq_len : {256, 512, 1024, 2048, 4096, 8192, 16384}) {
         for (size_t head_dim : {64, 128}) {
           for (unsigned int kv_layout : {0U, 1U}) {
             for (unsigned int pos_encoding_mode : {0U, 1U}) {
@@ -188,9 +201,9 @@ TEST(FlashInferCorrectnessTest, SingleDecodeKernelCorrectnessTestFP16) {
   TestSingleDecodeKernelCorrectness<__half, __half>();
 }
 
-TEST(FlashInferCorrectnessTest, SingleDecodeKernelCorrectnessTestBF16) {
-  TestSingleDecodeKernelCorrectness<__hip_bfloat16, __hip_bfloat16>();
-}
+// TEST(FlashInferCorrectnessTest, SingleDecodeKernelCorrectnessTestBF16) {
+//   TestSingleDecodeKernelCorrectness<__hip_bfloat16, __hip_bfloat16>();
+// }
 
 //*****************************************************************************
 // Disabled because we don't have a way to convert from float<-> fp8
@@ -204,24 +217,41 @@ TEST(FlashInferCorrectnessTest, SingleDecodeKernelCorrectnessTestBF16) {
 // }
 //*****************************************************************************
 
-// void broken() {
-//   using DTypeQO = __half;
-//   using DTypeKV = __half;
+void broken() {
+  using DTypeQO = __half;
+  using DTypeKV = __half;
 
-//   unsigned int kv_layout = 0U;
-//   unsigned int pos_encoding_mode = 0U;
+  unsigned int kv_layout = 0U;
+  unsigned int pos_encoding_mode = 0U;
 
-//   // Broken
-//   size_t num_qo_heads = 32;
-//   size_t num_kv_heads = 4;
-//   size_t seq_len = 1024;
-//   size_t head_dim = 128;
+  // Broken
+  size_t num_qo_heads = 32;
+  size_t num_kv_heads = 4;
+  size_t seq_len = 512;
+  size_t head_dim = 256;
 
-//   _TestDecodingKernelCorrectness<DTypeQO, DTypeKV>(num_qo_heads, num_kv_heads, seq_len, head_dim,
-//                                                    QKVLayout(kv_layout),
-//                                                    PosEncodingMode(pos_encoding_mode));
-// }
+  _TestDecodingKernelCorrectness<DTypeQO, DTypeKV>(num_qo_heads, num_kv_heads, seq_len, head_dim,
+                                                   QKVLayout(kv_layout),
+                                                   PosEncodingMode(pos_encoding_mode));
+}
 
+void nan_check(){
+  using DTypeQO = __half;
+  using DTypeKV = __half;
+
+  unsigned int kv_layout = 0U;
+  unsigned int pos_encoding_mode = 0U;
+
+  // Broken
+  size_t num_qo_heads = 32;
+  size_t num_kv_heads = 8;
+  size_t seq_len = 16384;
+  size_t head_dim = 128;
+
+  _TestDecodingKernelCorrectness<DTypeQO, DTypeKV>(num_qo_heads, num_kv_heads, seq_len, head_dim,
+                                                   QKVLayout(kv_layout),
+                                                   PosEncodingMode(pos_encoding_mode));
+}
 // void working()
 // {
 //     using DTypeQO = __half;
@@ -243,6 +273,7 @@ TEST(FlashInferCorrectnessTest, SingleDecodeKernelCorrectnessTestBF16) {
 
 int main(int argc, char** argv) {
   // broken();
+  // nan_check();
     testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
