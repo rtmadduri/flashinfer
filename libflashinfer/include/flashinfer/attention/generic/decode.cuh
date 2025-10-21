@@ -609,7 +609,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(const Params params) {
 constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeof_dtype) {
   if (group_size == 8U) {
     if (sizeof_dtype == 1U) {
-      return 256;  // not enough registers for 512 threads
+      return 512;  // not enough registers for 512 threads
     } else {
       return 512;
     }
@@ -653,7 +653,9 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
   const uint32_t seq_len = params.kv_len;
 
   // AMD CDNA3 optimized vector size - prefer smaller vec_size for better occupancy
-  constexpr uint32_t vec_size = std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL);
+  constexpr uint32_t vec_size =
+      (HEAD_DIM < 256) ? std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 64UL)
+                       : std::max(8UL / sizeof(DTypeKV), HEAD_DIM / 32UL);  // max(8/2, 256/64) = 4
 
   constexpr uint32_t bdx = HEAD_DIM / vec_size;  // 64
 
@@ -664,7 +666,7 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
     constexpr uint32_t bdy = GROUP_SIZE;
     constexpr uint32_t num_threads =
         std::max(get_heuristic_num_threads(GROUP_SIZE, sizeof(DTypeKV)), bdx * bdy);
-    constexpr uint32_t bdz = num_threads / (bdx * bdy);  // 1
+    constexpr uint32_t bdz = num_threads / (bdx * bdy);  // 2
 
     // AMD CDNA3 Reduce tile size to minimize shared memory usage
     constexpr uint32_t tile_size_per_bdx = (GROUP_SIZE == 1) ? 2U : 1U;  // 4
