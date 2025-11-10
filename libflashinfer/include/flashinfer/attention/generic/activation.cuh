@@ -2,8 +2,7 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ACTIVATION_CUH_
-#define FLASHINFER_ACTIVATION_CUH_
+#pragma once
 
 #include "gpu_iface/math_ops.hpp"
 #include "gpu_iface/platform.hpp"
@@ -54,5 +53,3 @@ __global__ void act_and_mul_kernel(T* __restrict__ out, const T* __restrict__ in
 
 }  // namespace activation
 }  // namespace flashinfer
-
-#endif  // FLASHINFER_ACTIVATION_CUH_

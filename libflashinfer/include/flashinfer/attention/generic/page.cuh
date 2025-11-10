@@ -39,8 +39,7 @@ struct paged_kv_t {
   DType* v_data;
   IdType* indices;
 
-  // [batch_size + 1] The page indptr array, with the first element 0, the
-  // last element nnz_pages
+  // [batch_size + 1] The page indptr array, with the first element 0, the last element nnz_pages
   IdType* indptr;
   // [batch_size] The offset of the last page for each request in the batch
   IdType* last_page_len;
@@ -72,14 +71,11 @@ struct paged_kv_t {
    * \param head_dim The dimension of each head
    * \param batch_size The batch size
    * \param layout The layout of last 3 dimensions in KV-Cache.
-   * \param k_data The start pointer of key cache, k_cache should be
-   * contiguous
-   * \param v_data The start pointer of value cache, v_cache should be
-   * contiguous
+   * \param k_data The start pointer of key cache, k_cache should be contiguous
+   * \param v_data The start pointer of value cache, v_cache should be contiguous
    * \param indices The page indices array
    * \param indptr The page indptr array
-   * \param last_page_len The offset of the last page for each request in the
-   * batch
+   * \param last_page_len The offset of the last page for each request in the batch
    * \param rope_pos_offset The start position of each request in the batch.
    */
   __host__ __forceinline__ paged_kv_t(uint32_t num_heads, uint32_t page_size, uint32_t head_dim,
@@ -108,15 +104,12 @@ struct paged_kv_t {
    * \param head_dim The dimension of each head
    * \param batch_size The batch size
    * \param layout The layout of last 3 dimensions in KV-Cache.
-   * \param k_data The start pointer of key cache, k_cache doesn't have to be
-   * contiguous
-   * \param v_data The start pointer of value cache, v_cache doesn't have to
-   * be contiguous
+   * \param k_data The start pointer of key cache, k_cache doesn't have to be contiguous
+   * \param v_data The start pointer of value cache, v_cache doesn't have to be contiguous
    * \param kv_strides custom strides of each dimensions of k_data and v_data
    * \param indices The page indices array
    * \param indptr The page indptr array
-   * \param last_page_len The offset of the last page for each request in the
-   * batch
+   * \param last_page_len The offset of the last page for each request in the batch
    * \param rope_pos_offset The start position of each request in the batch.
    */
   __host__ __forceinline__ paged_kv_t(uint32_t num_heads, uint32_t page_size, uint32_t head_dim,
@@ -205,8 +198,7 @@ struct paged_kv_t {
 };
 
 /*!
- * \brief Kernel to append new keys/values to the paged key-value cache in
- * the decode phase
+ * \brief CUDA kernel to append new keys/values to the paged key-value cache in the decode phase
  * \tparam head_dim The dimension of each head
  * \tparam vec_size The vector size used in the kernel
  * \tparam DType The data type of the key-value cache
@@ -240,8 +232,7 @@ __global__ void AppendPagedKVCacheDecodeKernel(paged_kv_t<DType, IdType> paged_k
 }
 
 /*!
- * \brief kernel to append new keys/values to the paged key-value cache in
- * the prefill phase
+ * \brief CUDA kernel to append new keys/values to the paged key-value cache in the prefill phase
  * \tparam head_dim The dimension of each head
  * \tparam vec_size The vector size used in the kernel
  * \tparam DType The data type of the key-value cache
@@ -261,6 +252,7 @@ __global__ void AppendPagedKVCacheKernel(paged_kv_t<DType, IdType> paged_kv,
                                          size_t append_k_stride_n, size_t append_k_stride_h,
                                          size_t append_v_stride_n, size_t append_v_stride_h) {
   uint32_t tx = threadIdx.x, ty = threadIdx.y;
+  uint32_t num_heads = paged_kv.num_heads;
   uint32_t head_idx = ty;
   uint32_t cta_id = blockIdx.x;
   uint32_t num_ctas = gridDim.x;
@@ -329,15 +321,14 @@ gpuError_t BlockSparseIndicesToVectorSparseOffset(
 }
 
 /*!
- * \brief Append new keys/values to the paged key-value cache in the decode
- * phase
+ * \brief Append new keys/values to the paged key-value cache in the decode phase
  * \tparam DType The data type of the key-value cache
  * \tparam IdType The index data type of the kv-cache
  * \param paged_kv The paged key-value cache
  * \param key The key to be appended
  * \param value The value to be appended
- * \param stream The stream to execute kernels.
- * \return status Indicates whether CUDA/HIP calls are successful
+ * \param stream The CUDA stream to execute kernels.
+ * \return status Indicates whether CUDA calls are successful
  */
 template <typename DType, typename IdType>
 gpuError_t AppendPagedKVCacheDecode(paged_kv_t<DType, IdType> paged_kv, DType* key, DType* value,
@@ -368,8 +359,8 @@ gpuError_t AppendPagedKVCacheDecode(paged_kv_t<DType, IdType> paged_kv, DType* k
  * \param key The key to be appended
  * \param value The value to be appended
  * \param append_indptr The indptr array of the appended ragged tensor
- * \param stream The CUDA/HIP stream to execute kernels.
- * \return status Indicates whether CUDA/HIP calls are successful
+ * \param stream The CUDA stream to execute kernels.
+ * \return status Indicates whether CUDA calls are successful
  */
 template <typename DType, typename IdType>
 gpuError_t AppendPagedKVCache(paged_kv_t<DType, IdType> paged_kv, DType* append_key,
@@ -424,8 +415,7 @@ struct paged_kv_mla_t {
   DType* kpe_data;
   IdType* indices;
 
-  // [batch_size + 1] The page indptr array, with the first element 0, the
-  // last element nnz_pages
+  // [batch_size + 1] The page indptr array, with the first element 0, the last element nnz_pages
   IdType* indptr;
   // [batch_size] The offset of the last page for each request in the batch
   IdType* last_page_len;
@@ -456,14 +446,11 @@ struct paged_kv_mla_t {
    * \param head_dim_compressed_kv The dimension of compressed-kv
    * \param head_dim_kpe The dimension of k-pe
    * \param batch_size The batch size
-   * \param compressed_kv_data The start pointer of compressed-kv cache, cache
-   * should be contiguous
-   * \param kpe_data The start pointer of k-pe cache, cache should be
-   * contiguous
+   * \param compressed_kv_data The start pointer of compressed-kv cache, cache should be contiguous
+   * \param kpe_data The start pointer of k-pe cache, cache should be contiguous
    * \param indices The page indices array
    * \param indptr The page indptr array
-   * \param last_page_len The offset of the last page for each request in the
-   * batch
+   * \param last_page_len The offset of the last page for each request in the batch
    * \param rope_pos_offset The start position of each request in the batch.
    */
   __host__ __forceinline__ paged_kv_mla_t(uint32_t page_size, uint32_t head_dim_compressed_kv,
@@ -493,17 +480,13 @@ struct paged_kv_mla_t {
    * \param head_dim_compressed_kv The dimension of compressed-kv
    * \param head_dim_kpe The dimension of k-pe
    * \param batch_size The batch size
-   * \param compressed_kv_data The start pointer of compressed-kv cache, cache
-   * should be contiguous
-   * \param compressed_kv_strides custom strides of each dimensions of
-   * compressed-kv cache
-   * \param kpe_data The start pointer of k-pe cache, cache should be
-   * contiguous
+   * \param compressed_kv_data The start pointer of compressed-kv cache, cache should be contiguous
+   * \param compressed_kv_strides custom strides of each dimensions of compressed-kv cache
+   * \param kpe_data The start pointer of k-pe cache, cache should be contiguous
    * \param kpe_strides custom strides of each dimensions of k-pe cache
    * \param indices The page indices array
    * \param indptr The page indptr array
-   * \param last_page_len The offset of the last page for each request in the
-   * batch
+   * \param last_page_len The offset of the last page for each request in the batch
    * \param rope_pos_offset The start position of each request in the batch.
    */
   __host__ __forceinline__ paged_kv_mla_t(uint32_t page_size, uint32_t head_dim_compressed_kv,

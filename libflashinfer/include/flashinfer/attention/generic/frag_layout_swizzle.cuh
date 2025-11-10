@@ -2,8 +2,7 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_
-#define FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_
+#pragma once
 
 #include <cstdint>
 
@@ -33,5 +32,3 @@ __device__ __forceinline__ uint32_t frag_layout_swizzle_16b_to_8b_trans(uint32_t
   x = __byte_perm(x, tmp, ((threadIdx.x & 0x10) == 0) ? 0x5410 : 0x3276);
   return x;
 }
-
-#endif  // FLASHINFER_FRAG_LAYOUT_SWIZZLE_CUH_

@@ -3,8 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#ifndef FLASHINFER_NORM_CUH_
-#define FLASHINFER_NORM_CUH_
 
 #include <numeric>
 
@@ -14,6 +12,7 @@
 #include "gpu_iface/platform.hpp"
 #include "gpu_iface/utils.cuh"
 #include "gpu_iface/vec_dtypes.hpp"
+
 namespace flashinfer {
 
 using namespace gpu_iface::vec_dtypes;

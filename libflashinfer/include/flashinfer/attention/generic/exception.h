@@ -2,14 +2,62 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_EXCEPTION_H_
-#define FLASHINFER_EXCEPTION_H_
+#pragma once
 
 #include <exception>
 #include <sstream>
 
-namespace flashinfer {
+#define FLASHINFER_ERROR(message) throw flashinfer::Error(__FUNCTION__, __FILE__, __LINE__, message)
 
+// Base case for empty arguments
+inline void write_to_stream(std::ostringstream& oss) {
+  // No-op for empty arguments
+}
+
+template <typename T>
+void write_to_stream(std::ostringstream& oss, T&& val) {
+  oss << std::forward<T>(val);
+}
+
+template <typename T, typename... Args>
+void write_to_stream(std::ostringstream& oss, T&& val, Args&&... args) {
+  oss << std::forward<T>(val) << " ";
+  write_to_stream(oss, std::forward<Args>(args)...);
+}
+
+// Helper macro to handle empty __VA_ARGS__
+#define FLASHINFER_CHECK_IMPL(condition, message) \
+  if (!(condition)) {                             \
+    FLASHINFER_ERROR(message);                    \
+  }
+
+// Main macro that handles both cases
+#define FLASHINFER_CHECK(condition, ...)   \
+  do {                                     \
+    if (!(condition)) {                    \
+      std::ostringstream oss;              \
+      write_to_stream(oss, ##__VA_ARGS__); \
+      std::string msg = oss.str();         \
+      if (msg.empty()) {                   \
+        msg = "Check failed: " #condition; \
+      }                                    \
+      FLASHINFER_ERROR(msg);               \
+    }                                      \
+  } while (0)
+
+// Warning macro
+#define FLASHINFER_WARN(...)                                           \
+  do {                                                                 \
+    std::ostringstream oss;                                            \
+    write_to_stream(oss, ##__VA_ARGS__);                               \
+    std::string msg = oss.str();                                       \
+    if (msg.empty()) {                                                 \
+      msg = "Warning triggered";                                       \
+    }                                                                  \
+    flashinfer::Warning(__FUNCTION__, __FILE__, __LINE__, msg).emit(); \
+  } while (0)
+
+namespace flashinfer {
 class Error : public std::exception {
  private:
   std::string message_;
@@ -25,13 +73,19 @@ class Error : public std::exception {
   virtual const char* what() const noexcept override { return message_.c_str(); }
 };
 
-#define FLASHINFER_ERROR(message) throw Error(__FUNCTION__, __FILE__, __LINE__, message)
+class Warning {
+ private:
+  std::string message_;
 
-#define FLASHINFER_CHECK(condition, message) \
-  if (!(condition)) {                        \
-    FLASHINFER_ERROR(message);               \
+ public:
+  Warning(const std::string& func, const std::string& file, int line, const std::string& message) {
+    std::ostringstream oss;
+    oss << "Warning in function '" << func << "' "
+        << "at " << file << ":" << line << ": " << message;
+    message_ = oss.str();
   }
 
-}  // namespace flashinfer
+  void emit() const { std::cerr << message_ << std::endl; }
+};
 
-#endif  // FLASHINFER_EXCEPTION_H_
+}  // namespace flashinfer

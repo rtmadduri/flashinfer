@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+
+#include "gpu_iface/conversion_utils.h"
 #include "gpu_iface/dispatch.cuh"
 #include "gpu_iface/gpu_runtime_compat.hpp"
 #include "gpu_iface/math_ops.hpp"
@@ -11,18 +13,13 @@
 #include "gpu_iface/utils.cuh"
 #include "state.cuh"
 
-#ifdef PLATFORM_HIP_DEVICE
-#include "gpu_iface/conversion_utils.h"
-#endif
-
 namespace flashinfer {
 
 using PrefetchMode = gpu_iface::memory::PrefetchMode;
 using SharedMemFillMode = gpu_iface::memory::SharedMemFillMode;
 
 /*!
- * \brief The kernel that merges the self-attention state of two index sets
- * A and B.
+ * \brief The CUDA kernel that merges the self-attention state of two index sets A and B.
  * \tparam vec_size The vector size used in the kernel.
  * \tparam DTypeIn The data type of v_a and v_b.
  * \tparam DTypeO The data type of v_merged.
@@ -48,8 +45,8 @@ __global__ void MergeStateKernel(DTypeIn* __restrict__ v_a, float* __restrict__ 
   float s_a_val = s_a[pos * num_heads + head_idx];
   float s_b_val = s_b[pos * num_heads + head_idx];
   float s_max = max(s_a_val, s_b_val);
-  s_a_val = gpu_iface::math::ptx_exp2(s_a_val - s_max);
-  s_b_val = gpu_iface::math::ptx_exp2(s_b_val - s_max);
+  s_a_val = math::ptx_exp2(s_a_val - s_max);
+  s_b_val = math::ptx_exp2(s_b_val - s_max);
   float a_scale = s_a_val / (s_a_val + s_b_val);
   float b_scale = s_b_val / (s_a_val + s_b_val);
   vec_t<float, vec_size> v_a_vec, v_b_vec, v_merged_vec;
@@ -61,13 +58,12 @@ __global__ void MergeStateKernel(DTypeIn* __restrict__ v_a, float* __restrict__ 
   }
   v_merged_vec.cast_store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
   if (s_merged != nullptr) {
-    s_merged[pos * num_heads + head_idx] = gpu_iface::math::ptx_log2(s_a_val + s_b_val) + s_max;
+    s_merged[pos * num_heads + head_idx] = math::ptx_log2(s_a_val + s_b_val) + s_max;
   }
 }
 
 /*!
- * \brief The kernel that merges the self-attention state with another
- * state in-place.
+ * \brief The CUDA kernel that merges the self-attention state with another state in-place.
  * \tparam vec_size The vector size used in the kernel.
  * \tparam DType The data type of v and v_other.
  * \param v The partial v to be updated in-place. (n, h, d)
@@ -94,8 +90,8 @@ __global__ void MergeStateInPlaceKernel(DType* __restrict__ v, float* __restrict
   float s_val = s[pos * num_heads + head_idx];
   float s_other_val = s_other[pos * num_heads + head_idx];
   float s_max = max(s_val, s_other_val);
-  s_val = gpu_iface::math::ptx_exp2(s_val - s_max);
-  s_other_val = gpu_iface::math::ptx_exp2(s_other_val - s_max);
+  s_val = math::ptx_exp2(s_val - s_max);
+  s_other_val = math::ptx_exp2(s_other_val - s_max);
   float scale = s_val / (s_val + s_other_val);
   float other_scale = s_other_val / (s_val + s_other_val);
   vec_t<float, vec_size> v_vec, v_other_vec;
@@ -107,19 +103,39 @@ __global__ void MergeStateInPlaceKernel(DType* __restrict__ v, float* __restrict
   }
   v_vec.cast_store(v + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
   if (s != nullptr) {
-    s[pos * num_heads + head_idx] = gpu_iface::math::ptx_log2(s_val + s_other_val) + s_max;
+    s[pos * num_heads + head_idx] = math::ptx_log2(s_val + s_other_val) + s_max;
   }
 }
 
 template <uint32_t bdx, uint32_t bdy, uint32_t vec_size, typename DTypeIn>
 __device__ __forceinline__ void threadblock_sync_state(state_t<vec_size>& st, DTypeIn* v_smem,
-                                                       float* s_smem) {
-  const uint32_t tx = threadIdx.x, ty = threadIdx.y;
+                                                       float* s_smem,
+                                                       const uint32_t tx = threadIdx.x,
+                                                       const uint32_t ty = threadIdx.y) {
   constexpr uint32_t head_dim = vec_size * bdx;
   st.o.cast_store(v_smem + ty * head_dim + tx * vec_size);
   s_smem[ty] = st.get_lse();
   st.init();
   __syncthreads();
+
+#pragma unroll
+  for (uint32_t iter = 0; iter < bdy; ++iter) {
+    float s = s_smem[iter];
+    vec_t<float, vec_size> v;
+    v.cast_load(v_smem + iter * head_dim + tx * vec_size);
+    st.merge(v, s, 1);
+  }
+}
+
+template <uint32_t bdx, uint32_t bdy, uint32_t vec_size, typename DTypeIn>
+__device__ __forceinline__ void warp_sync_state(state_t<vec_size>& st, DTypeIn* v_smem,
+                                                float* s_smem, const uint32_t tx = threadIdx.x,
+                                                const uint32_t ty = threadIdx.y) {
+  constexpr uint32_t head_dim = vec_size * bdx;
+  st.o.cast_store(v_smem + ty * head_dim + tx * vec_size);
+  s_smem[ty] = st.get_lse();
+  st.init();
+  __syncwarp();
 
 #pragma unroll
   for (uint32_t iter = 0; iter < bdy; ++iter) {
@@ -207,7 +223,7 @@ __global__ void MergeStatesKernel(DTypeIn* __restrict__ V, float* __restrict__ S
 #endif
     v.store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
     if (s_merged != nullptr) {
-      s_merged[pos * num_heads + head_idx] = -gpu_iface::math::inf;
+      s_merged[pos * num_heads + head_idx] = -math::inf;
     }
     return;
   }
@@ -240,13 +256,12 @@ __global__ void MergeStatesKernel(DTypeIn* __restrict__ V, float* __restrict__ S
 }
 
 /*!
- * \brief The kernel that merges self-attention states of a list of index
- * sets, accelerated for larger number of index sets.
+ * \brief The CUDA kernel that merges self-attention states of a list of index sets,
+ *   accelerated for larger number of index sets.
  * \tparam vec_size The vector size used in the kernel.
  * \tparam bdx The blockDim.x used in the kernel.
  * \tparam bdy The blockDim.y used in the kernel.
- * \tparam num_smem_stages The number of stages of shared memory used in the
- * kernel.
+ * \tparam num_smem_stages The number of stages of shared memory used in the kernel.
  * \tparam DTypeIn The data type of v.
  * \tparam DTypeO The data type of v_merged.
  * \param V The partial v of index sets. (n, num_index_sets, h, d)
@@ -325,29 +340,25 @@ __global__ void MergeStatesLargeNumIndexSetsKernel(DTypeIn* __restrict__ V, floa
 }
 
 /*!
- * \brief The kernel to merge self-attention states of multiple index sets,
- * the number of index sets at each position might vary.
+ * \brief The CUDA kernel to merge self-attention states of multiple index sets, the number of
+ * index sets at each position might vary.
  *
- * For CUDA graph support, the kernel can be built with a maximum sequence
- * length and executed using a truncated, dynamic sequence length passed through
- * `seq_len_ptr`.
+ * For CUDA graph support, the kernel can be built with a maximum sequence length and executed
+ * using a truncated, dynamic sequence length passed through `seq_len_ptr`.
  *
  * \tparam vec_size The vector size used in the kernel.
  * \tparam bdx The blockDim.x used in the kernel.
  * \tparam bdy The blockDim.y used in the kernel.
- * \tparam num_smem_stages The number of stages of shared memory used in the
- * kernel.
+ * \tparam num_smem_stages The number of stages of shared memory used in the kernel.
  * \tparam DTypeIn The data type of v.
  * \tparam DTypeO The data type of v_merged.
  * \param V The partial v of index sets. (nnz, h, d)
  * \param S The logsumexp value of index sets. (nnz, h)
- * \param indptr The start offsets of each position in the variable length
- * array.
+ * \param indptr The start offsets of each position in the variable length array.
  * \param v_merged The merged v of index sets union. (n, h, d)
  * \param s_merged The merged logsumexp value of index sets union. (n, h)
  * \param max_seq_len The maximum sequence length supported by the kernel.
- * \param seq_len_ptr The current sequence length (number of positions populated
- * in indptr).
+ * \param seq_len_ptr The current sequence length (number of positions populated in indptr).
  * \param num_heads The number of heads of v.
  * \param head_dim The dimension of each head.
  * \note s are logsumexp values with base 2.
@@ -369,8 +380,15 @@ __global__ void PersistentVariableLengthMergeStatesKernel(
   DTypeIn* v_smem = (DTypeIn*)smem;
   float* s_smem = (float*)(smem + num_smem_stages * bdy * head_dim * sizeof(DTypeIn));
 
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.wait;");
+#endif
+
 #pragma unroll 1
   for (uint32_t i = cta_id; i < seq_len * num_heads; i += num_ctas) {
+    // NOTE (Yilong): necessary to prevent hazard on smaller `num_index_sets`
+    __syncthreads();
+
     uint32_t pos = i / num_heads;
     uint32_t head_idx = i % num_heads;
     state_t<vec_size> st;
@@ -385,7 +403,7 @@ __global__ void PersistentVariableLengthMergeStatesKernel(
 #endif
       v.store(v_merged + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
       if (s_merged != nullptr) {
-        s_merged[pos * num_heads + head_idx] = -gpu_iface::math::inf;
+        s_merged[pos * num_heads + head_idx] = -math::inf;
       }
       continue;
     }
@@ -447,6 +465,9 @@ __global__ void PersistentVariableLengthMergeStatesKernel(
       s_merged[pos * num_heads + head_idx] = st.get_lse();
     }
   }
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.launch_dependents;");
+#endif
 }
 
 template <uint32_t vec_size, uint32_t bdx, uint32_t bdy, uint32_t num_smem_stages, typename DTypeIn,
@@ -467,9 +488,14 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
   DTypeIn* v_smem = (DTypeIn*)smem;
 
   vec_t<float, vec_size> v_sum_vec;
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.wait;");
+#endif
 
 #pragma unroll 1
   for (uint32_t i = cta_id; i < seq_len * num_heads; i += num_ctas) {
+    __syncthreads();
+
     uint32_t pos = i / num_heads;
     uint32_t head_idx = i % num_heads;
     const uint32_t num_index_sets = indptr[pos + 1] - indptr[pos];
@@ -529,6 +555,9 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
 
     v_sum_vec.cast_store(v_sum + (pos * num_heads + head_idx) * head_dim + tx * vec_size);
   }
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.launch_dependents;");
+#endif
 }
 
 /*!
@@ -544,8 +573,8 @@ __global__ void PersistentVariableLengthAttentionSumKernel(DTypeIn* __restrict__
  * \param seq_len The sequence length.
  * \param num_heads The number of heads of v_a and v_b.
  * \param head_dim The dimension of each head.
- * \param stream The stream to execute the kernel.
- * \return status Indicates whether calls are successful
+ * \param stream The CUDA stream to execute the kernel.
+ * \return status Indicates whether CUDA calls are successful
  * \note Both s_a and s_b are logsumexp values with base 2.
  */
 template <typename DTypeIn, typename DTypeO>
@@ -576,8 +605,8 @@ gpuError_t MergeState(DTypeIn* v_a, float* s_a, DTypeIn* v_b, float* s_b, DTypeO
  * \param num_heads The number of heads of v and v_other.
  * \param head_dim The dimension of each head.
  * \param mask Optional mask of whether to merge given sequences or not. (n)
- * \param stream The stream to execute the kernel.
- * \return status Indicates whether calls are successful
+ * \param stream The CUDA stream to execute the kernel.
+ * \return status Indicates whether CUDA calls are successful
  * \note Both s and s_other are logsumexp values with base 2.
  */
 template <typename DType>
@@ -609,8 +638,8 @@ gpuError_t MergeStateInPlace(DType* v, float* s, DType* v_other, float* s_other,
  * \param seq_len The sequence length.
  * \param num_heads The number of heads of v.
  * \param head_dim The dimension of each head.
- * \param stream The stream to execute the kernel.
- * \return status Indicates whether calls are successful
+ * \param stream The CUDA stream to execute the kernel.
+ * \return status Indicates whether CUDA calls are successful
  * \note s are logsumexp values with base 2.
  */
 template <typename DTypeIn, typename DTypeO>
@@ -631,8 +660,8 @@ gpuError_t MergeStates(DTypeIn* v, float* s, DTypeO* v_merged, float* s_merged,
       void* args[] = {&v, &s, &v_merged, &s_merged, &num_index_sets, &num_heads};
       uint32_t smem_size =
           num_smem_stages * bdy * head_dim * sizeof(DTypeIn) + num_threads * sizeof(float);
-      FI_GPU_CALL(gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize,
-                                      smem_size));
+      FI_GPU_CALL(
+          gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
       FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
     } else {
       uint32_t bdy = num_heads;
@@ -665,7 +694,7 @@ gpuError_t AttentionSum(DTypeIn* v, DTypeO* v_sum, uint32_t num_index_sets, uint
 template <typename DTypeIn, typename DTypeO, typename IdType>
 gpuError_t VariableLengthMergeStates(DTypeIn* v, float* s, IdType* indptr, DTypeO* v_merged,
                                      float* s_merged, uint32_t max_seq_len, uint32_t* seq_len,
-                                     uint32_t num_heads, uint32_t head_dim,
+                                     uint32_t num_heads, uint32_t head_dim, bool enable_pdl,
                                      gpuStream_t stream = nullptr) {
   int dev_id = 0;
   int num_sms = 0;
@@ -690,9 +719,29 @@ gpuError_t VariableLengthMergeStates(DTypeIn* v, float* s, IdType* indptr, DType
     dim3 nblks(num_sms * num_blocks_per_sm);
     dim3 nthrs(bdx, bdy);
     void* args[] = {&v, &s, &indptr, &v_merged, &s_merged, &max_seq_len, &seq_len, &num_heads};
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_GPU_CALL(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+
+#if defined(PLATFORM_HIP_DEVICE)
     FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+#elif defined(PLATFORM_CUDA_DEVICE)
+    // PDL launch
+    if (enable_pdl) {
+      gpuLaunchAttribute attribute[1];
+      attribute[0].id = gpuLaunchAttributeProgrammaticStreamSerialization;
+      attribute[0].val.programmaticStreamSerializationAllowed = 1;
+      gpuLaunchConfig_t config;
+      config.attrs = attribute;
+      config.numAttrs = 1;
+      config.gridDim = nblks;
+      config.blockDim = nthrs;
+      config.dynamicSmemBytes = smem_size;
+      config.stream = stream;
+      FI_GPU_CALL(gpuLaunchKernelEx(&config, kernel, v, s, indptr, v_merged, s_merged,
+                                              max_seq_len, seq_len, num_heads));
+    } else {
+      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    }
+#endif
   });
   return gpuSuccess;
 }
@@ -700,7 +749,8 @@ gpuError_t VariableLengthMergeStates(DTypeIn* v, float* s, IdType* indptr, DType
 template <typename DTypeIn, typename DTypeO, typename IdType>
 gpuError_t VariableLengthAttentionSum(DTypeIn* v, IdType* indptr, DTypeO* v_sum,
                                       uint32_t max_seq_len, uint32_t* seq_len, uint32_t num_heads,
-                                      uint32_t head_dim, gpuStream_t stream = nullptr) {
+                                      uint32_t head_dim, bool enable_pdl,
+                                      gpuStream_t stream = nullptr) {
   int dev_id = 0;
   int num_sms = 0;
   int num_blocks_per_sm = 0;
@@ -723,9 +773,29 @@ gpuError_t VariableLengthAttentionSum(DTypeIn* v, IdType* indptr, DTypeO* v_sum,
     dim3 nblks(num_sms * num_blocks_per_sm);
     dim3 nthrs(bdx, bdy);
     void* args[] = {&v, &indptr, &v_sum, &max_seq_len, &seq_len, &num_heads};
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_GPU_CALL(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+
+#if defined(PLATFORM_HIP_DEVICE)
     FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+#elif defined(PLATFORM_CUDA_DEVICE)
+    if (enable_pdl) {
+      // PDL launch
+      gpuLaunchAttribute attribute[1];
+      attribute[0].id = gpuLaunchAttributeProgrammaticStreamSerialization;
+      attribute[0].val.programmaticStreamSerializationAllowed = 1;
+      gpuLaunchConfig_t config;
+      config.attrs = attribute;
+      config.numAttrs = 1;
+      config.gridDim = nblks;
+      config.blockDim = nthrs;
+      config.dynamicSmemBytes = smem_size;
+      config.stream = stream;
+      FI_GPU_CALL(
+          gpuLaunchKernelEx(&config, kernel, v, indptr, v_sum, max_seq_len, seq_len, num_heads));
+    } else {
+      FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+    }
+#endif
   });
   return gpuSuccess;
 }

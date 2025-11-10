@@ -22,9 +22,9 @@ namespace flashinfer {
 DEFINE_HAS_MEMBER(decode_maybe_q_rope_offset)
 
 namespace cg = cooperative_groups;
-using PrefetchMode = gpu_iface::memory::PrefetchMode;
-using SharedMemFillMode = gpu_iface::memory::SharedMemFillMode;
-using namespace gpu_iface::vec_dtypes;
+using gpu_iface::memory::PrefetchMode;
+using gpu_iface::memory::SharedMemFillMode;
+
 namespace {
 
 /*!
@@ -33,8 +33,7 @@ namespace {
  * \tparam head_dim A template integer indicates the head dimension
  * \tparam vec_size A template integer indicates the vector size
  * \tparam bdx A template integer indicates the block size in x dimension
- * \tparam tile_size A template integer indicates the tile size per (bdx * bdy)
- * threads.
+ * \tparam tile_size A template integer indicates the tile size per (bdx * bdy) threads.
  * \tparam T A template type indicates the input data type
  * \param smem A pointer to the start of shared memory
  * \param q_vec A vector of float indicates the thread-local query vector
@@ -42,8 +41,7 @@ namespace {
  * \param kv_shared_offset An array of uint32_t indicates the k/v tiles offset
  *   in shared memory of different pipeline stages
  * \param kv_idx A integer indicates the thread-local kv position in kv-cache
- * \param compute_stage_idx A integer indicates the compute stage index in the
- * pipeline
+ * \param compute_stage_idx A integer indicates the compute stage index in the pipeline
  * \param s A float indicates the thread-local result of qk
  * \param st The self-attention state to be updated
  */
@@ -76,8 +74,8 @@ __device__ __forceinline__ void compute_qk(
       s[j] += math::shfl_xor_sync(s[j], offset);
     }
     const uint32_t pos = kv_idx_base + tz * tile_size + j;
-    s[j] = variant.LogitsTransform(params, s[j], batch_idx, /*qo_idx=*/0,
-                                   /*kv_idx=*/pos, qo_head_idx, kv_head_idx);
+    s[j] = variant.LogitsTransform(params, s[j], batch_idx, /*qo_idx=*/0, /*kv_idx=*/pos,
+                                   qo_head_idx, kv_head_idx);
     if constexpr (variant.use_softmax) {
       s[j] *= variant.sm_scale_log2;
     }
@@ -107,15 +105,13 @@ __device__ __forceinline__ void compute_qk(
  * \brief Load v tile from shared memory and update local state
  * \tparam vec_size A template integer indicates the vector size
  * \tparam bdx A template integer indicates the block size in x dimension
- * \tparam tile_size A template integer indicates the tile size per (bdx * bdy)
- * threads.
+ * \tparam tile_size A template integer indicates the tile size per (bdx * bdy) threads.
  * \tparam T A template type indicates the input data type
  * \param smem A pointer to the start of shared memory
  * \param s A float indicates the pre-softmax attention score
  * \param kv_shared_offset An array of uint32_t indicates the k/v tiles offset
  * in shared memory of different pipeline stages
- * \param compute_stage_idx A integer indicates the compute stage index in the
- * pipeline
+ * \param compute_stage_idx A integer indicates the compute stage index in the pipeline
  * \param st The flashattention state to be updated
  */
 template <uint32_t vec_size, uint32_t bdx, uint32_t tile_size, typename T>
@@ -204,7 +200,7 @@ __device__ __forceinline__ void sync_state(AttentionVariant variant, state_t<vec
 template <PosEncodingMode pos_encoding_mode, uint32_t num_stages_smem, uint32_t tile_size_per_bdx,
           uint32_t vec_size, uint32_t bdx, uint32_t bdy, uint32_t bdz, typename AttentionVariant,
           typename Params>
-__global__ void SingleDecodeWithKVCacheKernel(const Params params) {
+__global__ void SingleDecodeWithKVCacheKernel(const __grid_constant__ Params params) {
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -243,15 +239,18 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
   if constexpr (pos_encoding_mode == PosEncodingMode::kRoPELlama) {
     const float rope_rcp_scale = params.rope_rcp_scale;
     const float rope_rcp_theta = params.rope_rcp_theta;
+
 #pragma unroll
     for (uint32_t i = 0; i < vec_size; ++i) {
       freq[i] = rope_rcp_scale *
                 __powf(rope_rcp_theta,
                        float(2 * ((tx * vec_size + i) % (head_dim / 2))) / float(head_dim));
     }
+
     // apply rotary embedding to q matrix
     q_vec = vec_apply_llama_rope<vec_size, bdx>(q + qo_head_idx * q_stride_h, freq, seq_len - 1);
   } else {
+    // do not apply rotary embedding to q matrix
     q_vec.cast_load(q + qo_head_idx * q_stride_h + tx * vec_size);
   }
   block.sync();
@@ -342,8 +341,10 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
   // sync local state of all warps inside a threadblock
   sync_state<vec_size, bdx, bdy, bdz>(variant, st_local, reinterpret_cast<float*>(smem), smem_md,
                                       tx, ty, tz);
-  if constexpr (variant.use_softmax) {
-    st_local.normalize();
+#pragma unroll
+  for (size_t i = 0; i < vec_size; ++i) {
+    st_local.o[i] = variant.OutputTransform(params, st_local.o[i], /*batch_idx=*/0, /*qo_idx=*/0,
+                                            qo_head_idx, st_local.m, st_local.d, /*scale=*/1.0f);
   }
 
   st_local.o.cast_store(o + (kv_chunk_idx * num_qo_heads + qo_head_idx) * head_dim + tx * vec_size);
@@ -353,8 +354,7 @@ __global__ void SingleDecodeWithKVCacheKernel(const Params params) {
 }
 
 /*!
- * \brief FlashAttention decoding gpu kernel with paged kv-cache for multiple
- * requests
+ * \brief FlashAttention decoding gpu kernel with paged kv-cache for multiple requests
  * \tparam pos_encoding_mode The positional encoding mode
  * \tparam vec_size A template integer indicates the vector size
  * \tparam bdx A template integer indicates the block size in x dimension
@@ -404,7 +404,7 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
   const uint32_t kv_tile_idx = params.kv_tile_indices[bx];
   const uint32_t kv_head_idx = by;
   const uint32_t qo_head_idx = kv_head_idx * bdy + ty;
-  // NOTE(Zihao): when gpuGraph is enabled, we will launch more blocks than
+  // NOTE(Zihao): when CUDAGraph is enabled, we will launch more blocks than
   // the actual batch size, so we need to check if the current batch is valid
   if (block_valid_mask && !block_valid_mask[bx]) return;
   const uint32_t kv_chunk_size = *(params.kv_chunk_size_ptr);
@@ -436,17 +436,24 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
     int32_t q_rope_offset_val = q_rope_offset == nullptr ? (kv_len - 1) : q_rope_offset[batch_idx];
     const float rope_rcp_scale = params.rope_rcp_scale;
     const float rope_rcp_theta = params.rope_rcp_theta;
+
 #pragma unroll
     for (uint32_t i = 0; i < vec_size; ++i) {
       freq[i] = rope_rcp_scale *
                 __powf(rope_rcp_theta,
                        float(2 * ((tx * vec_size + i) % (head_dim / 2))) / float(head_dim));
     }
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+    asm volatile("griddepcontrol.wait;");
+#endif
     // apply rotary embedding to q matrix
     q_vec = vec_apply_llama_rope<vec_size, bdx>(
         q + batch_idx * q_stride_n + qo_head_idx * q_stride_h, freq, q_rope_offset_val);
   } else {
-    // do not apply rotary embedding to q matrix
+// do not apply rotary embedding to q matrix
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+    asm volatile("griddepcontrol.wait;");
+#endif
     q_vec.cast_load(q + batch_idx * q_stride_n + qo_head_idx * q_stride_h + tx * vec_size);
   }
 
@@ -568,8 +575,10 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
   // sync local state of all warps inside a threadblock
   sync_state<vec_size, bdx, bdy, bdz>(variant, st, reinterpret_cast<float*>(smem), smem_md, tx, ty,
                                       tz);
-  if constexpr (variant.use_softmax) {
-    st.normalize();
+#pragma unroll
+  for (size_t i = 0; i < vec_size; ++i) {
+    st.o[i] = variant.OutputTransform(params, st.o[i], bx, /*qo_idx=*/0, qo_head_idx, st.m, st.d,
+                                      /*scale=*/1.0f);
   }
 
   if (tz == 0) {
@@ -579,12 +588,15 @@ __device__ __inline__ void BatchDecodeWithPagedKVCacheDevice(const Params& param
       lse[bx * num_qo_heads + qo_head_idx] = st.get_lse();
     }
   }
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.launch_dependents;");
+#endif
 }
 
 template <PosEncodingMode POS_ENCODING_MODE, uint32_t num_stages_smem, uint32_t tile_size_per_bdx,
           uint32_t vec_size, uint32_t bdx, uint32_t bdy, uint32_t bdz, typename AttentionVariant,
           typename Params>
-__global__ void BatchDecodeWithPagedKVCacheKernel(const Params params) {
+__global__ void BatchDecodeWithPagedKVCacheKernel(const __grid_constant__ Params params) {
   extern __shared__ uint8_t smem[];
   BatchDecodeWithPagedKVCacheDevice<POS_ENCODING_MODE, num_stages_smem, tile_size_per_bdx, vec_size,
                                     bdx, bdy, bdz, AttentionVariant>(params, smem);
@@ -592,8 +604,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernel(const Params params) {
 
 /*!
  * \brief Get the heuristic number of threads per threadblock
- * \param group_size The number of qo heads that maps to the same kv head in
- * GQA.
+ * \param group_size The number of qo heads that maps to the same kv head in GQA.
  * \param sizeof_dtype The size (in terms of bytes) of the input data type
  */
 constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeof_dtype) {
@@ -604,9 +615,7 @@ constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeo
       return 512U;
     }
   } else {
-    // At 128 threads and 32 threads per warp, the CUDA implementation deploys 4 warps per block.
-    // We have 64 threads per wavefront so we use 256 threads
-    return 256U;
+    return 128U;
   }
 }
 
@@ -630,7 +639,7 @@ constexpr uint32_t get_heuristic_num_threads(uint32_t group_size, uint32_t sizeo
  * \param rope_scale The scaling factor used in RoPE Interpolation
  * \param rope_theta The theta used in RoPE
  * \param stream The gpu stream to launch the kernel
- * \return status Indicates whether gpu calls are successful
+ * \return status Indicates whether CUDA calls are successful
  */
 template <uint32_t HEAD_DIM, PosEncodingMode POS_ENCODING_MODE, typename AttentionVariant,
           typename Params>
@@ -746,7 +755,8 @@ gpuError_t SingleDecodeWithKVCacheDispatched(Params params, typename Params::DTy
 template <uint32_t HEAD_DIM, PosEncodingMode POS_ENCODING_MODE, typename AttentionVariant,
           typename Params>
 gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params::DTypeO* tmp_v,
-                                                 float* tmp_s, gpuStream_t stream) {
+                                                 float* tmp_s, bool enable_pdl,
+                                                 gpuStream_t stream) {
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -772,16 +782,18 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
       auto kernel =
           BatchDecodeWithPagedKVCacheKernel<POS_ENCODING_MODE, NUM_STAGES_SMEM, tile_size_per_bdx,
                                             vec_size, bdx, bdy, bdz, AttentionVariant, Params>;
-      FI_GPU_CALL(gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize,
-                                      smem_size));
+      FI_GPU_CALL(
+          gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+      dim3 nblks(padded_batch_size, num_kv_heads);
+      dim3 nthrs(bdx, bdy, bdz);
+
+      void* args[] = {(void*)&params};
 
       if (tmp_v == nullptr) {
         // do not use partition-kv kernel
-        dim3 nblks(padded_batch_size, num_kv_heads);
-        dim3 nthrs(bdx, bdy, bdz);
         params.partition_kv = false;
-        void* args[] = {(void*)&params};
         FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+
       } else {
         // use partition-kv kernel
         params.partition_kv = true;
@@ -790,17 +802,16 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatched(Params params, typename Params:
         params.o = tmp_v;
         params.lse = tmp_s;
         void* args[] = {(void*)&params};
-        dim3 nblks(padded_batch_size, num_kv_heads);
-        dim3 nthrs(bdx, bdy, bdz);
         FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+
         if constexpr (AttentionVariant::use_softmax) {
           FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.o_indptr, o, lse,
                                                 params.paged_kv.batch_size, nullptr, num_qo_heads,
-                                                HEAD_DIM, stream));
+                                                HEAD_DIM, enable_pdl, stream));
         } else {
           FI_GPU_CALL(VariableLengthAttentionSum(tmp_v, params.o_indptr, o,
                                                  params.paged_kv.batch_size, nullptr, num_qo_heads,
-                                                 HEAD_DIM, stream));
+                                                 HEAD_DIM, enable_pdl, stream));
         }
       }
     });
@@ -897,7 +908,7 @@ __global__ void BatchDecodeWithPagedKVCacheKernelMLA(Params params) {
   const uint32_t tx = threadIdx.x, ty = threadIdx.y, tz = threadIdx.z;
   const uint32_t t_offset = dim3_offset(bdy, bdx, tz, ty, tx);
 
-  // NOTE(Zihao): when gpuGraph is enabled, we will launch more blocks than
+  // NOTE(Zihao): when CUDAGraph is enabled, we will launch more blocks than
   // the actual batch size, so we need to check if the current batch is valid
   if (block_valid_mask && !block_valid_mask[batch_idx]) return;
   const uint32_t mapped_batch_idx = params.request_indices[batch_idx];
@@ -939,11 +950,15 @@ __global__ void BatchDecodeWithPagedKVCacheKernelMLA(Params params) {
   uint32_t qo_head_idx[tile_size_qo_heads];
 
   vec_t<float, vec_size_kpe> freq;
+
 #pragma unroll
   for (uint32_t i = 0; i < vec_size_kpe; ++i) {
     freq[i] = rope_rcp_scale * __powf(rope_rcp_theta, float(2 * ((tx * vec_size_kpe + i) / 2)) /
                                                           float(head_dim_kpe));
   }
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.wait;");
+#endif
   // load q_nope and q_pe tile
 #pragma unroll
   for (int i = 0; i < tile_size_qo_heads; ++i) {
@@ -1054,7 +1069,11 @@ __global__ void BatchDecodeWithPagedKVCacheKernelMLA(Params params) {
 #pragma unroll
     for (int i = 0; i < tile_size_qo_heads; ++i) {
       if (qo_head_idx[i] < num_qo_heads) {
-        st[i].normalize();
+#pragma unroll
+        for (size_t j = 0; j < vec_size_ckv; ++j) {
+          st[i].o[j] = variant.OutputTransform(params, st[i].o[j], batch_idx, /*qo_idx=*/0,
+                                               qo_head_idx[i], st[i].m, st[i].d, /*scale=*/1.0f);
+        }
         st[i].o.cast_store(o + (batch_idx * num_qo_heads + qo_head_idx[i]) * head_dim_ckv +
                            tx * vec_size_ckv);
 
@@ -1064,11 +1083,15 @@ __global__ void BatchDecodeWithPagedKVCacheKernelMLA(Params params) {
       }
     }
   }
+#if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
+  asm volatile("griddepcontrol.launch_dependents;");
+#endif
 }
 
 template <uint32_t HEAD_DIM_CKV, uint32_t HEAD_DIM_KPE, typename AttentionVariant, typename Params>
 gpuError_t BatchDecodeWithPagedKVCacheDispatchedMLA(Params params, typename Params::DTypeO* tmp_v,
-                                                    float* tmp_s, gpuStream_t stream) {
+                                                    float* tmp_s, bool enable_pdl,
+                                                    gpuStream_t stream) {
   using DTypeQ = typename Params::DTypeQ;
   using DTypeKV = typename Params::DTypeKV;
   using DTypeO = typename Params::DTypeO;
@@ -1096,13 +1119,13 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatchedMLA(Params params, typename Para
     auto kernel =
         BatchDecodeWithPagedKVCacheKernelMLA<NUM_STAGES_SMEM, vec_size_ckv, vec_size_kpe, bdx, bdy,
                                              bdz, tile_size_qo_heads, AttentionVariant, Params>;
-    FI_GPU_CALL(
-        gpuFuncSetAttribute((void*)kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    FI_GPU_CALL(gpuFuncSetAttribute(kernel, gpuFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+
+    dim3 nblks(padded_batch_size, gdy);
+    dim3 nthrs(bdx, bdy, bdz);
 
     if (tmp_v == nullptr) {
       // do not use partition-kv kernel
-      dim3 nblks(padded_batch_size, gdy);
-      dim3 nthrs(bdx, bdy, bdz);
       params.partition_kv = false;
       void* args[] = {(void*)&params};
       FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
@@ -1114,17 +1137,14 @@ gpuError_t BatchDecodeWithPagedKVCacheDispatchedMLA(Params params, typename Para
       params.o = tmp_v;
       params.lse = tmp_s;
       void* args[] = {(void*)&params};
-      dim3 nblks(padded_batch_size, gdy);
-      dim3 nthrs(bdx, bdy, bdz);
       FI_GPU_CALL(gpuLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
+
       FI_GPU_CALL(VariableLengthMergeStates(tmp_v, tmp_s, params.o_indptr, o, lse,
                                             params.paged_kv.batch_size, nullptr, num_qo_heads,
-                                            HEAD_DIM_CKV, stream));
+                                            HEAD_DIM_CKV, enable_pdl, stream));
     }
   });
   return gpuSuccess;
 }
 
 }  // namespace flashinfer
-
-#endif  // FLASHINFER_DECODE_CUH_

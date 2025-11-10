@@ -2,21 +2,15 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_STATE_CUH_
-#define FLASHINFER_STATE_CUH_
+#pragma once
 
 #include "gpu_iface/math_ops.hpp"
 #include "gpu_iface/platform.hpp"
 #include "gpu_iface/vec_dtypes.hpp"
 
-// #if defined(PLATFORM_CUDA_DEVICE)
-// #include "gpu_iface/backend/cuda/vec_dtypes.cuh"
-#if defined(PLATFORM_HIP_DEVICE)
-#define HIP_ENABLE_WARP_SYNC_BUILTINS 1
-#endif
-
 namespace flashinfer {
 using namespace gpu_iface::vec_dtypes;
+
 /*!
  * \brief The flashattention state.
  * \tparam vec_size The size of the vector used in o.
@@ -42,8 +36,7 @@ struct state_t {
 
   /*!
    * \brief Merge the state with another state.
-   * \param other_m The maximum value of pre-softmax logits of the other
-   * state.
+   * \param other_m The maximum value of pre-softmax logits of the other state.
    * \param other_d The sum of exp(pre-softmax logits - m) of the other state.
    * \param other_o The weighted sum of v of the other state.
    */
@@ -76,5 +69,3 @@ struct state_t {
 };
 
 }  // namespace flashinfer
-
-#endif  // FLASHINFER_STATE_CUH_

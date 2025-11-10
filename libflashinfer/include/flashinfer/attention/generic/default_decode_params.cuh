@@ -3,8 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#ifndef FLASHINFER_DECODE_PARAMS_CUH_
-#define FLASHINFER_DECODE_PARAMS_CUH_
 
 #include <cstdint>
 
@@ -264,5 +262,3 @@ struct BatchDecodeParamsMLA {
 };
 
 }  // namespace flashinfer
-
-#endif  // FLASHINFER_DECODE_PARAMS_CUH_

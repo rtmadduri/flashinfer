@@ -2,8 +2,7 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_PREFILL_PARAMS_CUH_
-#define FLASHINFER_PREFILL_PARAMS_CUH_
+#pragma once
 
 #include <cmath>
 #include <cstdint>
@@ -27,10 +26,10 @@ struct SinglePrefillParams {
   float* lse;
   float* maybe_alibi_slopes;
   uint_fastdiv group_size;
-  uint32_t num_qo_heads;
-  uint32_t num_kv_heads;
   uint32_t qo_len;
   uint32_t kv_len;
+  uint32_t num_qo_heads;
+  uint32_t num_kv_heads;
   uint32_t q_stride_n;
   uint32_t q_stride_h;
   uint32_t k_stride_n;
@@ -129,10 +128,8 @@ struct BatchPrefillRaggedParams {
   IdType* q_indptr;
   IdType* kv_indptr;
   IdType* maybe_mask_indptr;
-  IdType* maybe_q_rope_offset;  // maybe_q_rope_offset is only used for
-                                // fused-rope attention
-  IdType* maybe_k_rope_offset;  // maybe_k_rope_offset is only used for
-                                // fused-rope attention
+  IdType* maybe_q_rope_offset;  // maybe_q_rope_offset is only used for fused-rope attention
+  IdType* maybe_k_rope_offset;  // maybe_k_rope_offset is only used for fused-rope attention
   DTypeO* o;
   float* lse;
   float* maybe_alibi_slopes;
@@ -162,6 +159,10 @@ struct BatchPrefillRaggedParams {
   uint32_t* total_num_rows;
   uint32_t padded_batch_size;
   bool partition_kv;
+  uint32_t* maybe_prefix_len_ptr;
+  uint16_t* maybe_token_pos_in_items_ptr;
+  uint32_t token_pos_in_items_len;
+  uint16_t* maybe_max_item_len_ptr;
 
   __host__ BatchPrefillRaggedParams()
       : q(nullptr),
@@ -200,7 +201,11 @@ struct BatchPrefillRaggedParams {
         max_total_num_rows(0),
         total_num_rows(nullptr),
         padded_batch_size(0),
-        partition_kv(false) {}
+        partition_kv(false),
+        maybe_prefix_len_ptr(nullptr),
+        maybe_token_pos_in_items_ptr(nullptr),
+        token_pos_in_items_len(0),
+        maybe_max_item_len_ptr(nullptr) {}
 
   __host__ BatchPrefillRaggedParams(DTypeQ* q, DTypeKV* k, DTypeKV* v, uint8_t* maybe_custom_mask,
                                     IdType* q_indptr, IdType* kv_indptr, IdType* maybe_mask_indptr,
@@ -247,7 +252,11 @@ struct BatchPrefillRaggedParams {
         max_total_num_rows(0),
         total_num_rows(nullptr),
         padded_batch_size(0),
-        partition_kv(false) {}
+        partition_kv(false),
+        maybe_prefix_len_ptr(nullptr),
+        maybe_token_pos_in_items_ptr(nullptr),
+        token_pos_in_items_len(0),
+        maybe_max_item_len_ptr(nullptr) {}
 
   __host__ __device__ __forceinline__ uint32_t get_qo_len(uint32_t batch_idx) const {
     return q_indptr[batch_idx + 1] - q_indptr[batch_idx];
@@ -270,8 +279,7 @@ struct BatchPrefillPagedParams {
   uint8_t* maybe_custom_mask;
   IdType* q_indptr;
   IdType* maybe_mask_indptr;
-  IdType* maybe_q_rope_offset;  // maybe_q_rope_offset is only used for
-                                // fused-rope attention
+  IdType* maybe_q_rope_offset;  // maybe_q_rope_offset is only used for fused-rope attention
   DTypeO* o;
   float* lse;
   float* maybe_alibi_slopes;
@@ -296,6 +304,10 @@ struct BatchPrefillPagedParams {
   uint32_t* total_num_rows;
   uint32_t padded_batch_size;
   bool partition_kv;
+  uint32_t* maybe_prefix_len_ptr;
+  uint16_t* maybe_token_pos_in_items_ptr;
+  uint32_t token_pos_in_items_len;
+  uint16_t* maybe_max_item_len_ptr;
 
   __host__ BatchPrefillPagedParams()
       : q(nullptr),
@@ -326,7 +338,11 @@ struct BatchPrefillPagedParams {
         max_total_num_rows(0),
         total_num_rows(nullptr),
         padded_batch_size(0),
-        partition_kv(false) {}
+        partition_kv(false),
+        maybe_prefix_len_ptr(nullptr),
+        maybe_token_pos_in_items_ptr(nullptr),
+        token_pos_in_items_len(0),
+        maybe_max_item_len_ptr(nullptr) {}
 
   __host__ BatchPrefillPagedParams(DTypeQ* q, paged_kv_t<DTypeKV, IdType> paged_kv,
                                    uint8_t* maybe_custom_mask, IdType* q_indptr,
@@ -363,7 +379,11 @@ struct BatchPrefillPagedParams {
         max_total_num_rows(0),
         total_num_rows(nullptr),
         padded_batch_size(0),
-        partition_kv(false) {}
+        partition_kv(false),
+        maybe_prefix_len_ptr(nullptr),
+        maybe_token_pos_in_items_ptr(nullptr),
+        token_pos_in_items_len(0),
+        maybe_max_item_len_ptr(nullptr) {}
 
   __host__ __device__ __forceinline__ uint32_t get_qo_len(uint32_t batch_idx) const {
     return q_indptr[batch_idx + 1] - q_indptr[batch_idx];
@@ -375,5 +395,3 @@ struct BatchPrefillPagedParams {
 };
 
 }  // namespace flashinfer
-
-#endif  // FLASHINFER_PREFILL_PARAMS_CUH_

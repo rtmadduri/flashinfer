@@ -2,8 +2,7 @@
 // SPDX-FileCopyrightText: 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FLASHINFER_ATTENTION_HEAP_H
-#define FLASHINFER_ATTENTION_HEAP_H
+#pragma once
 
 #include <algorithm>
 #include <stdexcept>
@@ -51,5 +50,3 @@ class MinHeap {
 };
 
 }  // namespace flashinfer
-
-#endif  // FLASHINFER_ATTENTION_HEAP_H
